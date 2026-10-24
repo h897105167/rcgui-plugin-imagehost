@@ -46,14 +46,17 @@
 
 | 分组 | 控件 key | 类型 |
 |---|---|---|
-| 存储 | `roots` / `naming` / `seqpad` / `dedupe` / `obsidian` / `trash` / `base` / `save` | 文本、下拉、数字、开关、路径、动作 |
-| 上传 | `file` / `root` / `subdir` / `upload` / `scan` / `lastlink` / `copy-link` | 路径、文本、动作 |
+| 图床工具（上传 → 直链） | `remote` / `refresh-remotes` / `path` / `browse` / `subdir` / `upload` / `scan` / `lastlink` / `copy-link` / `state` | 下拉、文本、路径、动作、状态 |
+| 存储与命名 | `roots` / `save` / `naming` / `seqpad` / `dedupe` / `obsidian` / `trash` / `base` | 文本、下拉、数字、开关、路径、动作 |
 | 已索引 | `reload` / `refresh` / `filter` / `files` | 动作、文本、清单 |
 | 访问令牌 | `tokenlabel` / `add-token` | 文本、动作 |
-| 状态 | `state` / `tip` / `token-tip` | 状态行、提示 |
+| 提示 | `tip` / `store-tip` / `token-tip` | 提示 |
+
+「存储的远程」的候选不是写死的：插件被调用时用 `rclone config/listremotes` 取列表，通过返回值的 `choices` 交给本体渲染；
+所以 `config.json` 里 `options` 只放一个占位项，真实选项运行时才有。「路径」右边的「浏览」列出该远程当前路径的子目录（含上一层）。
 
 `roots` 的写法是 `id=远程路径`，多个用逗号分隔，例如 `local=D:\pics, oss=oss:img/test`。
-第一个根是默认根，`root` 留空时用它。
+第一个根是默认根 —— 上面「存储的远程 + 路径」这两栏编辑的就是它。
 
 直链的拼法是 `<公网地址>/i/<根 id>/<路径>`；`公网地址` 留空时用本体服务的 `origin`。
 `/i/<根 id>/<路径>` 是插件自己的图片路由（宿主用 `rclone.cat` 读字节），所以公网地址可以反代到本体上。
@@ -95,8 +98,8 @@ bash scripts/pack.sh               # Linux / macOS / CI
 ### 发版
 
 1. 改 `config.json` 的 `version`（必须与 tag 一致，CI 会校验）；
-2. `git tag v0.3.0 && git push origin v0.3.0`；
-3. CI 构建、打包、建 Release，资产名 `imagehost-0.3.0.zip`；
+2. `git tag v0.4.0 && git push origin v0.4.0`；
+3. CI 构建、打包、建 Release，资产名 `imagehost-0.4.0.zip`；
 4. 把 Release 页面上打印的 sha256 填进本体的 `plugins/manifest.json`。
 
 ---
@@ -107,7 +110,9 @@ bash scripts/pack.sh               # Linux / macOS / CI
 
 | action | 等价 HTTP 请求 | 结果（`result.body`） |
 |---|---|---|
-| `state` / `autostart` | `GET /config` + `GET /stats` | `status`（如「2 个存储根 · 128 张图片」）、`lamp`、`checks`、`hints`、`values` |
+| `state` / `autostart` | `GET /config` + `GET /stats` | `status`（如「2 个存储根 · 128 张图片」）、`lamp`、`checks`、`hints`、`values`、`choices`（远程列表） |
+| `refresh-remotes` | `rclone config/listremotes` | `choices.remote` + `status:"N 个远程"` |
+| `browse` | `rclone operations/list`（`form.remote:form.path`） | `choices.path`：上一层 + 当前路径下的子目录 |
 | `save` | `PUT /config`（由 `form` 拼 body） | `status:"已保存"`、`values` 回填规范化后的配置；校验失败 400 + `lamp:"err"` |
 | `reload` | `GET /config`，并重新读 `kv` | 同 `state`，但不受旧快照影响 |
 | `refresh` / `scan` | `POST /scan` | 扫描结果 `added`/`total` + 刷新后的状态 |

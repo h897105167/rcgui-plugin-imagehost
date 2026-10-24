@@ -1,7 +1,7 @@
 {
   "id": "imagehost",
   "name": "图床",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "entry": "main.wasm",
   "description": "基于 rclone 的图床：上传、去重、索引、直链",
   "author": "h897105167",
@@ -16,14 +16,43 @@
     "on_start": "reload",
     "on_exit": "exit",
     "controls": [
-      { "kind": "group", "key": "g-store", "label": "存储" },
+      { "kind": "group", "key": "g-tool", "label": "图床工具（上传 → 直链）" },
       {
-        "kind": "field", "key": "roots", "label": "存储根",
+        "kind": "field", "key": "remote", "label": "存储的远程", "field": "select",
+        "placeholder": "先点右侧「刷新远程」",
+        "line": "s1", "width": 260
+      },
+      { "kind": "action", "key": "refresh-remotes", "label": "刷新远程", "line": "s1" },
+      {
+        "kind": "field", "key": "path", "label": "路径", "field": "path",
+        "placeholder": "远程里的目录，留空就是远程根目录",
+        "line": "s2", "width": 430
+      },
+      { "kind": "action", "key": "browse", "label": "浏览", "line": "s2" },
+      {
+        "kind": "field", "key": "subdir", "label": "子目录", "field": "text",
+        "placeholder": "可留空，按命名规则自动建目录",
+        "line": "s3", "width": 300
+      },
+      { "kind": "action", "key": "upload", "label": "上传", "style": "primary", "line": "s3" },
+      { "kind": "action", "key": "scan", "label": "重建索引", "line": "s3" },
+      {
+        "kind": "field", "key": "lastlink", "label": "直链",
+        "placeholder": "上传成功后出现在这里",
+        "field": "text", "line": "s4", "width": 430
+      },
+      { "kind": "action", "key": "copy-link", "label": "复制", "line": "s4" },
+      { "kind": "status", "key": "state", "label": "状态" },
+
+      { "kind": "divider", "key": "d1" },
+
+      { "kind": "group", "key": "g-store", "label": "存储与命名" },
+      {
+        "kind": "field", "key": "roots", "label": "存储根", "field": "text",
         "placeholder": "id=远程路径，多个用逗号分隔，如 local=D:\\pics",
-        "field": "text", "line": "r1", "width": 430
+        "line": "r1", "width": 430
       },
       { "kind": "action", "key": "save", "label": "保存", "style": "primary", "line": "r1" },
-
       {
         "kind": "field", "key": "naming", "label": "命名", "field": "select",
         "options": ["timestamp", "seq", "keep", "hash"],
@@ -51,51 +80,31 @@
         "placeholder": "如 https://img.example.com（留空用本机服务）",
         "field": "text", "line": "r3", "width": 330
       },
-
-      { "kind": "divider", "key": "d1" },
-
-      { "kind": "group", "key": "g-upload", "label": "上传" },
-      {
-        "kind": "field", "key": "file", "label": "图片",
-        "placeholder": "选择要上传的图片", "field": "path", "line": "u1", "width": 430
-      },
-      {
-        "kind": "field", "key": "root", "label": "根 id",
-        "placeholder": "留空用第一个根", "field": "text", "line": "u1", "width": 130
-      },
-      {
-        "kind": "field", "key": "subdir", "label": "子目录",
-        "placeholder": "可留空", "field": "text", "line": "u2", "width": 200
-      },
-      { "kind": "action", "key": "upload", "label": "上传", "style": "primary", "line": "u2" },
-      { "kind": "action", "key": "scan", "label": "扫描索引", "line": "u2" },
-      {
-        "kind": "field", "key": "lastlink", "label": "最近直链",
-        "placeholder": "上传成功后出现在这里", "field": "text", "line": "u3", "width": 430
-      },
-      { "kind": "action", "key": "copy-link", "label": "复制直链", "line": "u3" },
+      { "kind": "hint", "key": "store-tip",
+        "text": "上面「存储的远程 + 路径」编辑的就是第一个根（默认根）；多重根或自定义公网模板直接改这里。" },
 
       { "kind": "divider", "key": "d2" },
 
       { "kind": "group", "key": "g-files", "label": "已索引" },
       { "kind": "action", "key": "reload", "label": "重新读取", "line": "f1" },
       { "kind": "action", "key": "refresh", "label": "刷新列表", "line": "f1" },
-      { "kind": "field", "key": "filter", "label": "过滤", "placeholder": "按路径/名称过滤",
-        "field": "text", "line": "f1", "width": 220 },
+      {
+        "kind": "field", "key": "filter", "label": "过滤", "placeholder": "按路径/名称过滤",
+        "field": "text", "line": "f1", "width": 220
+      },
       { "kind": "checks", "key": "files", "label": "文件" },
 
       { "kind": "divider", "key": "d3" },
 
       { "kind": "group", "key": "g-token", "label": "访问令牌" },
-      { "kind": "field", "key": "tokenlabel", "label": "名称", "placeholder": "如 obsidian",
-        "field": "text", "line": "t1", "width": 180 },
+      {
+        "kind": "field", "key": "tokenlabel", "label": "名称", "placeholder": "如 obsidian",
+        "field": "text", "line": "t1", "width": 180
+      },
       { "kind": "action", "key": "add-token", "label": "生成令牌", "line": "t1" },
       { "kind": "hint", "key": "token-tip",
         "text": "配置了令牌后，上传与扫描接口需要 Authorization: Bearer <令牌>。" },
 
-      { "kind": "divider", "key": "d4" },
-
-      { "kind": "status", "key": "state", "label": "状态" },
       { "kind": "hint", "key": "tip",
         "text": "直链格式：<公网地址>/i/<根 id>/<路径>；公网地址留空时用本机服务地址。索引保存在插件私有的 kv 里，卸载插件会一起删除。" }
     ]

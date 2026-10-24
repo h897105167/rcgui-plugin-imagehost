@@ -11,9 +11,13 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   cargo build --release --target wasm32-wasip1
 fi
 
-cfg_id=$(python3 -c 'import json,sys;print(json.load(open("config.json"))["id"])')
-cfg_version=$(python3 -c 'import json,sys;print(json.load(open("config.json"))["version"])')
-cfg_entry=$(python3 -c 'import json,sys;print(json.load(open("config.json")).get("entry") or "main.wasm")')
+# 顶层字段用 sed 取，不依赖 python（Windows 上的 python3 常常是应用商店占位符）
+json_str() { sed -n "s/^ *\"$1\": *\"\([^\"]*\)\".*/\1/p" config.json | head -1; }
+
+cfg_id=$(json_str id)
+cfg_version=$(json_str version)
+cfg_entry=$(json_str entry)
+[ -n "$cfg_entry" ] || cfg_entry=main.wasm
 
 wasm="target/wasm32-wasip1/release/$cfg_entry"
 if [ ! -f "$wasm" ]; then
@@ -42,7 +46,14 @@ cp "$wasm" "$out/$cfg_entry"
 
 zip="dist/$cfg_id-$cfg_version.zip"
 rm -f "$zip"
-( cd "$out" && zip -q -r "../$cfg_id-$cfg_version.zip" . )
+if command -v zip >/dev/null 2>&1; then
+  ( cd "$out" && zip -q -r "../$cfg_id-$cfg_version.zip" . )
+else
+  # Windows 的 Git Bash 常常没有 zip：退回 PowerShell 打包
+  echo "没有 zip 命令，改用 PowerShell 的 Compress-Archive" >&2
+  pwsh -NoProfile -Command "Compress-Archive -Path '$out/*' -DestinationPath '$zip' -Force" \
+    || powershell -NoProfile -Command "Compress-Archive -Path '$out/*' -DestinationPath '$zip' -Force"
+fi
 
 echo
 echo "打包完成：$zip"

@@ -328,6 +328,73 @@ fn roots_to_text(roots: &[ImageRoot]) -> String {
         .join(",")
 }
 
+/// rclone 远端写法 "k-vault:assets/icons" → ("k-vault", "assets/icons")
+fn split_spec(spec: &str) -> (String, String) {
+    match spec.split_once(':') {
+        Some((r, p)) => (
+            r.trim().to_string(),
+            p.trim().trim_matches('/').to_string(),
+        ),
+        None => (spec.trim().to_string(), String::new()),
+    }
+}
+
+/// 远端名 + 目录 → rclone 写法（目录为空就只留远端名）
+fn join_spec(remote: &str, path: &str) -> String {
+    let r = remote.trim();
+    let p = path.trim().trim_matches('/');
+    if r.is_empty() {
+        return String::new();
+    }
+    if p.is_empty() {
+        r.to_string()
+    } else {
+        format!("{r}:{p}")
+    }
+}
+
+/// 默认根：面板上「存储的远程 + 路径」编辑的就是它
+fn default_root_index(roots: &[ImageRoot]) -> Option<usize> {
+    roots
+        .iter()
+        .position(|r| r.is_default)
+        .or(if roots.is_empty() { None } else { Some(0) })
+}
+
+/// 默认根当前拆出来的 (远端, 目录)
+fn default_root_spec(cfg: &ImagehostConfig) -> (String, String) {
+    match default_root_index(&cfg.roots).and_then(|i| cfg.roots.get(i)) {
+        Some(r) => split_spec(&r.remote),
+        None => (String::new(), String::new()),
+    }
+}
+
+/// 把人话两栏（远端 / 路径）写回默认根的 remote。
+///
+/// 只在两栏与现状不同时才覆盖 —— 否则高级区里手写的多根 `roots` 文本会被
+/// 面板上那些只是「回显」的值顶掉。
+fn apply_store_fields(roots: &mut Vec<ImageRoot>, remote: &str, path: &str) {
+    let remote = remote.trim();
+    if remote.is_empty() {
+        return;
+    }
+    if roots.is_empty() {
+        roots.push(ImageRoot {
+            id: "default".into(),
+            name: "默认图床".into(),
+            remote: String::new(),
+            public_url_template: String::new(),
+            is_default: true,
+        });
+    }
+    let idx = default_root_index(roots).unwrap_or(0);
+    let (cur_remote, cur_path) = split_spec(&roots[idx].remote);
+    if remote == cur_remote && path.trim().trim_matches('/') == cur_path {
+        return;
+    }
+    roots[idx].remote = join_spec(remote, path);
+}
+
 /// 直链拼接的唯一入口：配了公网地址就用它，否则退回本次请求的 origin。
 fn build_link(base: &str, origin: &str, root_id: &str, path: &str) -> String {
     let b = base.trim().trim_end_matches('/');
@@ -340,7 +407,10 @@ fn build_link(base: &str, origin: &str, root_id: &str, path: &str) -> String {
 
 /// 配置 → 回填进表单的 values（值一律是字符串，与宿主约定一致）
 fn config_values(cfg: &ImagehostConfig) -> Value {
+    let (remote, path) = default_root_spec(cfg);
     json!({
+        "remote": remote,
+        "path": path,
         "roots": roots_to_text(&cfg.roots),
         "naming": cfg.naming.mode,
         "seqpad": cfg.naming.seq_pad.to_string(),
@@ -563,7 +633,7 @@ fn handle(input: &[u8]) -> Result<Value, String> {
             "manifest": {
                 "id": "imagehost",
                 "name": "图床",
-                "version": "0.3.0",
+                "version": env!("CARGO_PKG_VERSION"),
                 "description": "基于 rclone 的图床：上传、去重、索引、直链代理",
             }
         })),
@@ -600,6 +670,8 @@ const ACTIONS: &[&str] = &[
     "upload",
     "add-token",
     "copy-link",
+    "refresh-remotes",
+    "browse",
     "shutdown",
     "exit",
     "http",
@@ -678,10 +750,12 @@ fn cfg_from_body(body: &Value, fallback: &ImagehostConfig) -> ImagehostConfig {
 fn form_to_config_body(form: &Value, cfg: &ImagehostConfig) -> Value {
     let get = |k: &str| s(form.get(k)).trim().to_string();
     // 表单里压根没这个键才沿用旧值；给了但被清空就算真空（PUT /config 会报错提醒）
-    let roots = match form.get("roots") {
+    let mut roots = match form.get("roots") {
         None => cfg.roots.clone(),
         Some(_) => parse_roots(&get("roots"), &cfg.roots),
     };
+    // 「存储的远程 + 路径」是默认根的人话视图，和现状不同才覆盖
+    apply_store_fields(&mut roots, &get("remote"), &get("path"));
     let naming = {
         let m = get("naming");
         if m.is_empty() {
@@ -844,6 +918,113 @@ fn panel_state_body(cfg: &ImagehostConfig, index: &[ImageItem], extra: i64) -> V
     })
 }
 
+/// 宿主把 rclone.call 的结果放在 `provided.<key>`，形状不固定：裸数组、
+/// `{"list":[…]}`, `{"remotes":[…]}`, 或外面再包一层 `{"result":{…}}`。
+fn call_list(v: &Value) -> Vec<Value> {
+    if v.is_null() {
+        return Vec::new();
+    }
+    let u = unwrap_result(v);
+    if let Some(a) = u.as_array() {
+        return a.clone();
+    }
+    for k in ["list", "remotes", "dirs"] {
+        if let Some(a) = u.get(k).and_then(|x| x.as_array()) {
+            return a.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// provided.remotes → 去重后的远程名列表
+fn remotes_names(provided: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in call_list(&provided.get("remotes").cloned().unwrap_or(Value::Null)) {
+        let name = match item {
+            Value::String(x) => x,
+            other => s(Some(&other)).to_string(),
+        };
+        let name = name.trim().to_string();
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// 刷新远程：`rclone config/listremotes` 的结果 → 面板下拉候选
+fn remotes_body(id: u64, provided: &Value, form: &Value) -> Value {
+    let remotes = remotes_names(provided);
+    let cur = s(form.get("remote")).trim().to_string();
+    let picked = if remotes.contains(&cur) {
+        cur
+    } else {
+        remotes.first().cloned().unwrap_or_default()
+    };
+    let empty = remotes.is_empty();
+    panel_response(
+        id,
+        vec![],
+        200,
+        json!({
+            "status": if empty {
+                "没读到远程：rclone 没在运行，或还没配置过远程".to_string()
+            } else {
+                format!("{} 个远程", remotes.len())
+            },
+            "lamp": if empty { "warn" } else { "ok" },
+            "choices": {"remote": remotes},
+            "values": {"remote": picked},
+            "hints": {"tip": "远程列表来自 rclone config/listremotes；选好远程后填路径，点「浏览」会列出它的子目录。"},
+        }),
+    )
+}
+
+/// 浏览路径：列出当前路径下的子目录（外加回到上一层），塞进 path 字段的 ▾
+fn dirs_body(id: u64, provided: &Value, form: &Value) -> Value {
+    let path = normalize_sub(&s(form.get("path")));
+    let mut cands: Vec<String> = Vec::new();
+    let parent = dirname_of(&path);
+    if !path.is_empty() && !parent.is_empty() && parent != path {
+        cands.push(parent);
+    }
+    let mut n = 0i64;
+    for item in call_list(&provided.get("dirs").cloned().unwrap_or(Value::Null)) {
+        if !item
+            .get("IsDir")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let name = s(item.get("Name")).trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let next = join_nonempty(&[&path, &name]);
+        if !cands.contains(&next) {
+            cands.push(next);
+            n += 1;
+        }
+    }
+    panel_response(
+        id,
+        vec![],
+        200,
+        json!({
+            "status": if n == 0 {
+                format!("{} 下没有子目录", if path.is_empty() { "远端根目录".to_string() } else { path.clone() })
+            } else {
+                format!("{n} 个子目录")
+            },
+            "lamp": if n == 0 { "warn" } else { "ok" },
+            "choices": {"path": cands},
+            "values": {"path": path},
+            "hints": {"tip": "点路径框右侧 ▾ 选子目录（含上一层）；回到根目录把它清空即可。"},
+        }),
+    )
+}
+
 /// 上传成功后面板该显示什么
 fn panel_upload_body(body: &Value) -> Value {
     let items = body
@@ -991,6 +1172,39 @@ fn first_round(id: u64, params: &Value, action: &str) -> Result<Value, String> {
             "params": {"path": file, "max_bytes": 67108864},
         }));
     }
+    // 「刷新远程」「浏览路径」：直接问 rclone 要列表，拿回来填面板下拉；
+    // 面板首屏（state）也顺手取一次远程列表，否则下拉框里只有当前值。
+    if action == "refresh-remotes" || action == "state" {
+        need.push(json!({
+            "cap": "rclone.call",
+            "key": "remotes",
+            "params": {"method": "config/listremotes", "params": {}},
+        }));
+    }
+    if action == "browse" {
+        let remote = s(form.get("remote")).trim().to_string();
+        let path = s(form.get("path")).trim().to_string();
+        if remote.is_empty() {
+            return Ok(panel_response(
+                id,
+                vec![],
+                400,
+                json!({
+                    "status": "先选一个远程，再浏览路径",
+                    "lamp": "warn",
+                    "toast": {"level": "warn", "message": "先选一个远程，再浏览路径"},
+                }),
+            ));
+        }
+        need.push(json!({
+            "cap": "rclone.call",
+            "key": "dirs",
+            "params": {
+                "method": "operations/list",
+                "params": {"fs": join_spec(&remote, &path), "remote": "", "options": {"dirsOnly": true}},
+            },
+        }));
+    }
     Ok(json!({
         "id": id,
         "need": need,
@@ -1098,6 +1312,19 @@ fn handle_request(id: u64, params: Value) -> Result<Value, String> {
     }
 
     let kv = provided.get("kv").cloned().unwrap_or(json!({}));
+    // 两个「只读 rclone 列表」的动作在拿到 cap 结果后就完事，不用再合成 HTTP 请求
+    if action == "refresh-remotes" || action == "browse" {
+        let form = params
+            .get("form")
+            .cloned()
+            .or_else(|| params.get("state").and_then(|s| s.get("form")).cloned())
+            .unwrap_or(json!({}));
+        return Ok(if action == "refresh-remotes" {
+            remotes_body(id, &provided, &form)
+        } else {
+            dirs_body(id, &provided, &form)
+        });
+    }
     let entries: Option<Vec<Value>> = match provided.get("entries") {
         Some(v) => {
             // rclone.call 的结果可能是裸数组、{"list":[...]} 或 {"result":{"list":[...]}}
@@ -1202,12 +1429,24 @@ fn handle_request(id: u64, params: Value) -> Result<Value, String> {
         .and_then(|x| x.as_array())
         .cloned()
         .unwrap_or_default();
-    Ok(panel_response(
-        id,
-        ops,
-        status,
-        to_panel(&action, status, body, &cfg, &index),
-    ))
+    let mut panel = to_panel(&action, status, body, &cfg, &index);
+    // 首屏：把 rclone 的远程列表塞进「存储的远程」下拉
+    if action == "state" {
+        let names = remotes_names(&provided);
+        if !names.is_empty() {
+            let cur = s(form.get("remote")).trim().to_string();
+            let pick = if names.iter().any(|n| n == &cur) {
+                cur
+            } else {
+                names[0].clone()
+            };
+            panel["choices"] = json!({"remote": names});
+            if !pick.is_empty() {
+                panel["values"]["remote"] = json!(pick);
+            }
+        }
+    }
+    Ok(panel_response(id, ops, status, panel))
 }
 
 /// 既有 HTTP 路由表：http 模式原样调用，动作模式由 synth_http 合成的请求调用
@@ -2004,20 +2243,28 @@ mod tests {
     }
 
     #[test]
-    fn manifest_is_0_3_0() {
+    fn manifest_version_matches_config() {
         let m = handle_value(json!({"id": 1, "method": "manifest"}));
         assert_eq!(m["manifest"]["id"], json!("imagehost"));
-        assert_eq!(m["manifest"]["version"], json!("0.3.0"));
         // 面板要写剪贴板，声明里的 capabilities 必须有 ui
         let decl: Value = serde_json::from_str(include_str!("../config.json")).expect("config.json 解析失败");
-        assert_eq!(decl["version"], json!("0.3.0"));
+        // 版本号只维护一处：代码里的 manifest 与 config.json 必须一致
+        assert_eq!(m["manifest"]["version"], decl["version"]);
         let caps = decl["capabilities"].to_string();
         assert!(caps.contains("\"ui\""), "capabilities 缺 ui：{caps}");
-        // 新增的两个控件得在声明里
+        // 关键控件得在声明里
         let ctl = decl["plugin_setting"]["controls"].to_string();
-        assert!(ctl.contains("\"base\""), "缺 公网地址 控件");
-        assert!(ctl.contains("\"lastlink\""), "缺 最近直链 控件");
-        assert!(ctl.contains("\"copy-link\""), "缺 复制直链 按钮");
+        for key in [
+            "remote",
+            "path",
+            "refresh-remotes",
+            "browse",
+            "base",
+            "lastlink",
+            "copy-link",
+        ] {
+            assert!(ctl.contains(&format!("\"{key}\"")), "缺 {key} 控件");
+        }
     }
 
     #[test]
