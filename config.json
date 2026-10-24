@@ -1,7 +1,7 @@
 {
   "id": "imagehost",
   "name": "图床",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "entry": "main.wasm",
   "description": "基于 rclone 的图床：上传、去重、索引、直链",
   "author": "h897105167",

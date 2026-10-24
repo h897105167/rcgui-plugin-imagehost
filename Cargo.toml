@@ -1,6 +1,6 @@
 [package]
 name = "rcgui-plugin-imagehost"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "RCGUI 插件：基于 rclone 的图床（上传 / 去重 / 索引 / 直链）"
 license = "MIT"

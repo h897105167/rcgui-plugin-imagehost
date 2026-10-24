@@ -961,8 +961,7 @@ fn remotes_body(id: u64, provided: &Value, form: &Value) -> Value {
         cur
     } else {
         remotes.first().cloned().unwrap_or_default()
-    };
-    let empty = remotes.is_empty();
+    };    let empty = remotes.is_empty();
     panel_response(
         id,
         vec![],
@@ -1435,12 +1434,15 @@ fn handle_request(id: u64, params: Value) -> Result<Value, String> {
     if action == "state" {
         let names = remotes_names(&provided);
         if !names.is_empty() {
-            let cur = s(form.get("remote")).trim().to_string();
-            let pick = if names.iter().any(|n| n == &cur) {
-                cur
-            } else {
-                names[0].clone()
-            };
+            // 已经填好的值优先：配置里默认根的远程 > 表单里的值 > 列表第一个。
+            // 顺序不能反 —— 表单里可能还是上一轮存下的空串，直接取首个候选会把
+            // 用户配好的远程悄悄改掉。
+            let known = s(panel.pointer("/values/remote")).trim().to_string();
+            let from_form = s(form.get("remote")).trim().to_string();
+            let pick = [known, from_form]
+                .into_iter()
+                .find(|v| !v.is_empty() && names.iter().any(|n| n == v))
+                .unwrap_or_else(|| names[0].clone());
             panel["choices"] = json!({"remote": names});
             if !pick.is_empty() {
                 panel["values"]["remote"] = json!(pick);
@@ -2215,6 +2217,11 @@ mod tests {
                  "Size": 128, "IsDir": false, "ModTime": "2026-01-01T12:00:01Z"},
             ]}}),
             "rclone.cat" => json!({"data_b64": PNG_1PX, "size": 68, "content_type": "image/png"}),
+            // 本体回的是 rclone.conf 里的原样条目（"名字:类型"）
+            "rclone.remotes" => json!({
+                "remotes": ["AWS-bucket:s3", "k-vault:crypt"],
+                "source": "conf",
+            }),
             "fs.read_b64" => json!({"data_b64": PNG_1PX, "size": 68}),
             "ui.copy" => json!({"ok": true}),
             _ => json!({"error": format!("测试里没准备这个 cap：{cap}，need={need}")}),
@@ -2282,9 +2289,23 @@ mod tests {
         assert!(r.get("need").is_none());
     }
 
+    /// 首屏回填不能把用户配置好的远程改掉：表单里是空串时，必须以配置里的
+    /// 默认根为准，而不是远程候选列表的第一个。
     #[test]
-    fn save_normalizes_roots() {
-        let form = json!({
+    fn state_keeps_configured_remote_when_form_is_empty() {
+        let kv = json!({"config": {"roots": [
+            {"id": "default", "name": "默认图床", "remote": "k-vault:image_bed", "isDefault": true}
+        ]}});
+        let r = panel("state", json!({"remote": ""}), kv);
+        let body = &r["result"]["body"];
+        assert_eq!(body["values"]["remote"], json!("k-vault"));
+        let choices = body["choices"]["remote"].to_string();
+        assert!(choices.contains("k-vault"), "候选：{choices}");
+        assert!(choices.contains("AWS-bucket"), "候选：{choices}");
+    }
+
+    #[test]
+    fn save_normalizes_roots() {        let form = json!({
             "roots": "local=D:\\pics", "naming": "seq", "seqpad": "3",
             "dedupe": "true", "obsidian": "note", "trash": "", "base": "",
         });
