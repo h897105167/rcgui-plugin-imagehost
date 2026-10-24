@@ -1,0 +1,103 @@
+{
+  "id": "imagehost",
+  "name": "图床",
+  "version": "0.3.0",
+  "entry": "main.wasm",
+  "description": "基于 rclone 的图床：上传、去重、索引、直链",
+  "author": "h897105167",
+  "tags": ["图床", "图片", "rclone", "上传"],
+  "platform": "any",
+  "builtin": true,
+  "http_entry": true,
+  "capabilities": ["kv", "ui", "fs", "http", "rclone", "env"],
+  "plugin_setting": {
+    "version": 1,
+    "summary": "把本地图片传到 rclone 远程，生成稳定直链；支持去重、命名规则与索引。",
+    "on_start": "reload",
+    "on_exit": "exit",
+    "controls": [
+      { "kind": "group", "key": "g-store", "label": "存储" },
+      {
+        "kind": "field", "key": "roots", "label": "存储根",
+        "placeholder": "id=远程路径，多个用逗号分隔，如 local=D:\\pics",
+        "field": "text", "line": "r1", "width": 430
+      },
+      { "kind": "action", "key": "save", "label": "保存", "style": "primary", "line": "r1" },
+
+      {
+        "kind": "field", "key": "naming", "label": "命名", "field": "select",
+        "options": ["timestamp", "seq", "keep", "hash"],
+        "default": "timestamp", "line": "r2", "width": 150
+      },
+      {
+        "kind": "field", "key": "seqpad", "label": "序号位数", "field": "number",
+        "default": "3", "line": "r2", "width": 90
+      },
+      {
+        "kind": "field", "key": "dedupe", "label": "相同内容去重", "field": "bool",
+        "default": "true", "line": "r2"
+      },
+      {
+        "kind": "field", "key": "obsidian", "label": "Obsidian 布局", "field": "select",
+        "options": ["note", "date", "vault", "flat"],
+        "default": "note", "line": "r2", "width": 150
+      },
+      {
+        "kind": "field", "key": "trash", "label": "回收站", "placeholder": "删除的图片放这里（可留空）",
+        "field": "path", "line": "r3", "width": 330
+      },
+      {
+        "kind": "field", "key": "base", "label": "公网地址",
+        "placeholder": "如 https://img.example.com（留空用本机服务）",
+        "field": "text", "line": "r3", "width": 330
+      },
+
+      { "kind": "divider", "key": "d1" },
+
+      { "kind": "group", "key": "g-upload", "label": "上传" },
+      {
+        "kind": "field", "key": "file", "label": "图片",
+        "placeholder": "选择要上传的图片", "field": "path", "line": "u1", "width": 430
+      },
+      {
+        "kind": "field", "key": "root", "label": "根 id",
+        "placeholder": "留空用第一个根", "field": "text", "line": "u1", "width": 130
+      },
+      {
+        "kind": "field", "key": "subdir", "label": "子目录",
+        "placeholder": "可留空", "field": "text", "line": "u2", "width": 200
+      },
+      { "kind": "action", "key": "upload", "label": "上传", "style": "primary", "line": "u2" },
+      { "kind": "action", "key": "scan", "label": "扫描索引", "line": "u2" },
+      {
+        "kind": "field", "key": "lastlink", "label": "最近直链",
+        "placeholder": "上传成功后出现在这里", "field": "text", "line": "u3", "width": 430
+      },
+      { "kind": "action", "key": "copy-link", "label": "复制直链", "line": "u3" },
+
+      { "kind": "divider", "key": "d2" },
+
+      { "kind": "group", "key": "g-files", "label": "已索引" },
+      { "kind": "action", "key": "reload", "label": "重新读取", "line": "f1" },
+      { "kind": "action", "key": "refresh", "label": "刷新列表", "line": "f1" },
+      { "kind": "field", "key": "filter", "label": "过滤", "placeholder": "按路径/名称过滤",
+        "field": "text", "line": "f1", "width": 220 },
+      { "kind": "checks", "key": "files", "label": "文件" },
+
+      { "kind": "divider", "key": "d3" },
+
+      { "kind": "group", "key": "g-token", "label": "访问令牌" },
+      { "kind": "field", "key": "tokenlabel", "label": "名称", "placeholder": "如 obsidian",
+        "field": "text", "line": "t1", "width": 180 },
+      { "kind": "action", "key": "add-token", "label": "生成令牌", "line": "t1" },
+      { "kind": "hint", "key": "token-tip",
+        "text": "配置了令牌后，上传与扫描接口需要 Authorization: Bearer <令牌>。" },
+
+      { "kind": "divider", "key": "d4" },
+
+      { "kind": "status", "key": "state", "label": "状态" },
+      { "kind": "hint", "key": "tip",
+        "text": "直链格式：<公网地址>/i/<根 id>/<路径>；公网地址留空时用本机服务地址。索引保存在插件私有的 kv 里，卸载插件会一起删除。" }
+    ]
+  }
+}

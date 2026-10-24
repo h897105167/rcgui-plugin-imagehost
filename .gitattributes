@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# 二进制
+*.wasm binary
+*.zip binary
+*.png binary

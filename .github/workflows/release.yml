@@ -1,0 +1,54 @@
+name: release
+
+# 打 tag（vX.Y.Z）→ 构建 wasm → 打包目录包 → 建 Release 并挂上 zip
+# 本体的 scripts/fetch_plugins.ps1 就是从这个 Release 拉包的。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: 校验 tag 与 config.json 版本
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(python3 -c 'import json;print(json.load(open("config.json"))["version"])')
+          echo "tag=$tag version=$ver"
+          if [ "$tag" != "$ver" ]; then
+            echo "tag 与 config.json 的 version 不一致：请先改 config.json 再打 tag" >&2
+            exit 1
+          fi
+
+      - name: 构建并打包
+        run: bash scripts/pack.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-package
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          id=$(python3 -c 'import json;print(json.load(open("config.json"))["id"])')
+          ver=$(python3 -c 'import json;print(json.load(open("config.json"))["version"])')
+          gh release create "v$ver" "dist/$id-$ver.zip" \
+            --title "v$ver" --generate-notes \
+            || gh release upload "v$ver" "dist/$id-$ver.zip" --clobber
