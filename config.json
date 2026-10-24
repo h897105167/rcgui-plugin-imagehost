@@ -16,7 +16,7 @@
     "on_start": "state",
     "on_exit": "exit",
     "controls": [
-      { "kind": "group", "label": "图床工具（上传 → 直链 → 短链）" },
+      { "kind": "group", "key": "g-title", "label": "图床工具（上传 → 直链 → 短链）" },
       {
         "kind": "field",
         "key": "remote",
@@ -83,7 +83,7 @@
         "width": 140,
         "line": "s5"
       },
-      { "kind": "group", "label": "模板一参数" },
+      { "kind": "group", "key": "g-tpl1", "label": "模板一参数" },
       {
         "kind": "field",
         "key": "short_fmt",
