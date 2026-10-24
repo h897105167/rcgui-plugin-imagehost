@@ -102,6 +102,9 @@ bash scripts/pack.sh               # Linux / macOS / CI
 3. CI 构建、打包、建 Release，资产名 `imagehost-0.4.0.zip`；
 4. 把 Release 页面上打印的 sha256 填进本体的 `plugins/manifest.json`。
 
+> Release 由 CI 建，别在本地 `gh release create` —— 本地包与 CI 包的字节不同（编译器版本/路径差异），
+> 同时上传会互相覆盖，manifest 的 sha256 就对不上了。要发版只推 tag。
+
 ---
 
 ## 面板动作（action 协议）
