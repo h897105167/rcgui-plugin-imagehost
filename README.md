@@ -114,7 +114,7 @@ bash scripts/pack.sh               # Linux / macOS / CI
 | action | 等价 HTTP 请求 | 结果（`result.body`） |
 |---|---|---|
 | `state` / `autostart` | `GET /config` + `GET /stats` | `status`（如「2 个存储根 · 128 张图片」）、`lamp`、`checks`、`hints`、`values`、`choices`（远程列表） |
-| `refresh-remotes` | `rclone config/listremotes` | `choices.remote` + `status:"N 个远程"` |
+| `refresh-remotes` | 宿主能力 `rclone.remotes`（读本地 `rclone.conf`，不走 RC） | `choices.remote` + `status:"N 个远程"` |
 | `browse` | `rclone operations/list`（`form.remote:form.path`） | `choices.path`：上一层 + 当前路径下的子目录 |
 | `save` | `PUT /config`（由 `form` 拼 body） | `status:"已保存"`、`values` 回填规范化后的配置；校验失败 400 + `lamp:"err"` |
 | `reload` | `GET /config`，并重新读 `kv` | 同 `state`，但不受旧快照影响 |
