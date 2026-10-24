@@ -1,113 +1,188 @@
 {
   "id": "imagehost",
   "name": "图床",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "entry": "main.wasm",
-  "description": "基于 rclone 的图床：上传、去重、索引、直链",
+  "description": "基于 rclone 的图床：上传图片拿直链，可再换短链。",
   "author": "h897105167",
-  "tags": ["图床", "图片", "rclone", "上传"],
+  "tags": ["图床", "图片", "rclone", "上传", "短链"],
   "platform": "any",
-  "builtin": true,
+  "builtin": false,
   "http_entry": true,
   "capabilities": ["kv", "ui", "fs", "http", "rclone", "env"],
   "plugin_setting": {
     "version": 1,
-    "summary": "把本地图片传到 rclone 远程，生成稳定直链；支持去重、命名规则与索引。",
-    "on_start": "reload",
+    "summary": "把本地图片传到 rclone 远程，生成直链；需要时再换一条短链。",
+    "on_start": "state",
     "on_exit": "exit",
     "controls": [
-      { "kind": "group", "key": "g-tool", "label": "图床工具（上传 → 直链）" },
+      { "kind": "group", "label": "图床工具（上传 → 直链 → 短链）" },
       {
-        "kind": "field", "key": "remote", "label": "存储的远程", "field": "select",
+        "kind": "field",
+        "key": "remote",
+        "label": "存储的远程",
+        "field": "select",
         "dynamic": true,
-        "placeholder": "先点右侧「刷新远程」",
-        "line": "s1", "width": 260
-      },
-      { "kind": "action", "key": "refresh-remotes", "label": "刷新远程", "line": "s1" },
-      {
-        "kind": "field", "key": "path", "label": "路径", "field": "path",
-        "placeholder": "远程里的目录，留空就是远程根目录",
-        "line": "s2", "width": 430
-      },
-      { "kind": "action", "key": "browse", "label": "浏览", "line": "s2" },
-      {
-        "kind": "field", "key": "subdir", "label": "子目录", "field": "text",
-        "placeholder": "可留空，按命名规则自动建目录",
-        "line": "s3", "width": 300
-      },
-      { "kind": "action", "key": "upload", "label": "上传", "style": "primary", "line": "s3" },
-      { "kind": "action", "key": "scan", "label": "重建索引", "line": "s3" },
-      {
-        "kind": "field", "key": "lastlink", "label": "直链",
-        "placeholder": "上传成功后出现在这里",
-        "field": "text", "line": "s4", "width": 430
-      },
-      { "kind": "action", "key": "copy-link", "label": "复制", "line": "s4" },
-      { "kind": "status", "key": "state", "label": "状态" },
-
-      { "kind": "divider", "key": "d1" },
-
-      { "kind": "group", "key": "g-store", "label": "存储与命名" },
-      {
-        "kind": "field", "key": "roots", "label": "存储根", "field": "text",
-        "placeholder": "id=远程路径，多个用逗号分隔，如 local=D:\\pics",
-        "line": "r1", "width": 430
-      },
-      { "kind": "action", "key": "save", "label": "保存", "style": "primary", "line": "r1" },
-      {
-        "kind": "field", "key": "naming", "label": "命名", "field": "select",
-        "options": ["timestamp", "seq", "keep", "hash"],
-        "default": "timestamp", "line": "r2", "width": 150
+        "width": 260,
+        "line": "s1",
+        "placeholder": "选择一个 rclone 远程"
       },
       {
-        "kind": "field", "key": "seqpad", "label": "序号位数", "field": "number",
-        "default": "3", "line": "r2", "width": 90
+        "kind": "action",
+        "key": "refresh-remotes",
+        "label": "刷新远程",
+        "style": "secondary",
+        "line": "s1"
       },
       {
-        "kind": "field", "key": "dedupe", "label": "相同内容去重", "field": "bool",
-        "default": "true", "line": "r2"
+        "kind": "field",
+        "key": "path",
+        "label": "上传目录",
+        "field": "path",
+        "width": 430,
+        "line": "s2",
+        "placeholder": "留空 = 远程根，如 image_bed"
       },
       {
-        "kind": "field", "key": "obsidian", "label": "Obsidian 布局", "field": "select",
-        "options": ["note", "date", "vault", "flat"],
-        "default": "note", "line": "r2", "width": 150
+        "kind": "field",
+        "key": "upload_path",
+        "label": "上传图片路径",
+        "field": "text",
+        "width": 330,
+        "line": "s3",
+        "placeholder": "本机图片文件的完整路径"
       },
       {
-        "kind": "field", "key": "trash", "label": "回收站", "placeholder": "删除的图片放这里（可留空）",
-        "field": "path", "line": "r3", "width": 330
+        "kind": "action",
+        "key": "pick",
+        "label": "选择文件…",
+        "style": "secondary",
+        "line": "s3",
+        "dialog_title": "选择要上传的图片",
+        "filters": ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
       },
       {
-        "kind": "field", "key": "base", "label": "公网地址",
-        "placeholder": "如 https://img.example.com（留空用本机服务）",
-        "field": "text", "line": "r3", "width": 330
+        "kind": "field",
+        "key": "dedupe",
+        "label": "去重",
+        "field": "bool",
+        "default": "true",
+        "line": "s4"
       },
-      { "kind": "hint", "key": "store-tip",
-        "text": "上面「存储的远程 + 路径」编辑的就是第一个根（默认根）；多重根或自定义公网模板直接改这里。" },
-
-      { "kind": "divider", "key": "d2" },
-
-      { "kind": "group", "key": "g-files", "label": "已索引" },
-      { "kind": "action", "key": "reload", "label": "重新读取", "line": "f1" },
-      { "kind": "action", "key": "refresh", "label": "刷新列表", "line": "f1" },
       {
-        "kind": "field", "key": "filter", "label": "过滤", "placeholder": "按路径/名称过滤",
-        "field": "text", "line": "f1", "width": 220
+        "kind": "hint",
+        "key": "dedupe-tip",
+        "text": "去重：上传目录里已有同名文件就提示并取消上传（不勾选则自动改名成「名字 (1).png」）。"
       },
-      { "kind": "checks", "key": "files", "label": "文件" },
-
-      { "kind": "divider", "key": "d3" },
-
-      { "kind": "group", "key": "g-token", "label": "访问令牌" },
       {
-        "kind": "field", "key": "tokenlabel", "label": "名称", "placeholder": "如 obsidian",
-        "field": "text", "line": "t1", "width": 180
+        "kind": "field",
+        "key": "short_tpl",
+        "label": "短链模板",
+        "field": "select",
+        "options": ["不选择", "模板一"],
+        "width": 140,
+        "line": "s5"
       },
-      { "kind": "action", "key": "add-token", "label": "生成令牌", "line": "t1" },
-      { "kind": "hint", "key": "token-tip",
-        "text": "配置了令牌后，上传与扫描接口需要 Authorization: Bearer <令牌>。" },
-
-      { "kind": "hint", "key": "tip",
-        "text": "直链格式：<公网地址>/i/<根 id>/<路径>；公网地址留空时用本机服务地址。索引保存在插件私有的 kv 里，卸载插件会一起删除。" }
+      { "kind": "group", "label": "模板一参数" },
+      {
+        "kind": "field",
+        "key": "short_fmt",
+        "label": "返回格式",
+        "field": "select",
+        "options": ["无", "JSON", "JSONP"],
+        "width": 110,
+        "line": "t1"
+      },
+      {
+        "kind": "field",
+        "key": "short_method",
+        "label": "请求方式",
+        "field": "select",
+        "options": ["GET", "POST"],
+        "width": 100,
+        "line": "t1"
+      },
+      {
+        "kind": "field",
+        "key": "short_rate",
+        "label": "每秒上限",
+        "field": "number",
+        "width": 90,
+        "line": "t1",
+        "placeholder": "4"
+      },
+      {
+        "kind": "field",
+        "key": "short_callback",
+        "label": "JSONP 回调",
+        "field": "text",
+        "width": 120,
+        "line": "t1",
+        "placeholder": "callback"
+      },
+      {
+        "kind": "field",
+        "key": "short_url",
+        "label": "请求地址",
+        "field": "text",
+        "width": 260,
+        "line": "t2",
+        "placeholder": "http://api.ft12.com/api.php"
+      },
+      {
+        "kind": "field",
+        "key": "short_key",
+        "label": "api_key",
+        "field": "password",
+        "width": 300,
+        "line": "t2",
+        "placeholder": "模板一必须填 api_key"
+      },
+      {
+        "kind": "hint",
+        "key": "short-tip",
+        "text": "模板一：请求地址 + url + apikey；返回格式「无」表示服务端直接回纯文本链接。填好后点「保存设置」记住。"
+      },
+      {
+        "kind": "action",
+        "key": "run",
+        "label": "生成直链",
+        "style": "primary",
+        "line": "b1"
+      },
+      { "kind": "action", "key": "save", "label": "保存设置", "style": "secondary", "line": "b1" },
+      { "kind": "action", "key": "copy-link", "label": "复制直链", "style": "secondary", "line": "b1" },
+      {
+        "kind": "field",
+        "key": "last_link",
+        "label": "直链",
+        "field": "text",
+        "width": 430,
+        "line": "r1",
+        "placeholder": "上传后在这里显示"
+      },
+      {
+        "kind": "action",
+        "key": "copy-short",
+        "label": "复制短链",
+        "style": "secondary",
+        "line": "r2"
+      },
+      {
+        "kind": "field",
+        "key": "last_short",
+        "label": "短链",
+        "field": "text",
+        "width": 430,
+        "line": "r2",
+        "placeholder": "选「模板一」并上传后会在这里显示"
+      },
+      { "kind": "status", "key": "state", "text": "状态", "lamp": true },
+      {
+        "kind": "hint",
+        "key": "link-tip",
+        "text": "直链来源：K-Vault 等站点型远程由 rclone 上传后直接给出站点链接；普通远程退回本机服务的代理链接 http://127.0.0.1:<port>/plugin/imagehost/i/<远程>:<路径>，需要本程序在运行。"
+      }
     ]
   }
 }
