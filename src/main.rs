@@ -936,15 +936,16 @@ fn call_list(v: &Value) -> Vec<Value> {
     Vec::new()
 }
 
-/// provided.remotes → 去重后的远程名列表
+/// provided.remotes → 去重后的远程名列表（裸名字，不带 `:类型`）
 fn remotes_names(provided: &Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for item in call_list(&provided.get("remotes").cloned().unwrap_or(Value::Null)) {
-        let name = match item {
+        let raw = match item {
             Value::String(x) => x,
             other => s(Some(&other)).to_string(),
         };
-        let name = name.trim().to_string();
+        // rclone 的 config/listremotes 回 "名字:类型"；面板里只认裸名字
+        let name = raw.trim().split(':').next().unwrap_or("").trim().to_string();
         if !name.is_empty() && !out.contains(&name) {
             out.push(name);
         }
@@ -968,14 +969,14 @@ fn remotes_body(id: u64, provided: &Value, form: &Value) -> Value {
         200,
         json!({
             "status": if empty {
-                "没读到远程：rclone 没在运行，或还没配置过远程".to_string()
+                "没读到远程：rclone 没在运行，也读不到 rclone.conf".to_string()
             } else {
                 format!("{} 个远程", remotes.len())
             },
             "lamp": if empty { "warn" } else { "ok" },
             "choices": {"remote": remotes},
             "values": {"remote": picked},
-            "hints": {"tip": "远程列表来自 rclone config/listremotes；选好远程后填路径，点「浏览」会列出它的子目录。"},
+            "hints": {"tip": "远程列表由本体提供：先问 rclone 的 RC，问不到再只读解析 rclone.conf。选好远程后填路径，点「浏览」会列出它的子目录。"},
         }),
     )
 }
@@ -1172,13 +1173,13 @@ fn first_round(id: u64, params: &Value, action: &str) -> Result<Value, String> {
             "params": {"path": file, "max_bytes": 67108864},
         }));
     }
-    // 「刷新远程」「浏览路径」：直接问 rclone 要列表，拿回来填面板下拉；
+    // 「刷新远程」「浏览路径」：直接问宿主/ rclone 要列表，拿回来填面板下拉；
     // 面板首屏（state）也顺手取一次远程列表，否则下拉框里只有当前值。
     if action == "refresh-remotes" || action == "state" {
         need.push(json!({
-            "cap": "rclone.call",
+            "cap": "rclone.remotes",
             "key": "remotes",
-            "params": {"method": "config/listremotes", "params": {}},
+            "params": {},
         }));
     }
     if action == "browse" {

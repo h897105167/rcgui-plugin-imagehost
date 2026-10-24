@@ -1,7 +1,7 @@
 {
   "id": "imagehost",
   "name": "图床",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "entry": "main.wasm",
   "description": "基于 rclone 的图床：上传、去重、索引、直链",
   "author": "h897105167",
@@ -19,6 +19,7 @@
       { "kind": "group", "key": "g-tool", "label": "图床工具（上传 → 直链）" },
       {
         "kind": "field", "key": "remote", "label": "存储的远程", "field": "select",
+        "dynamic": true,
         "placeholder": "先点右侧「刷新远程」",
         "line": "s1", "width": 260
       },
