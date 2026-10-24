@@ -3,7 +3,7 @@
 **RCGUI 的图床插件** —— 把本地图片传到 rclone 远程，生成稳定直链，并维护一份可搜索的索引。
 
 > 本体仓库：[h897105167/rclone_gui_windows](https://github.com/h897105167/rclone_gui_windows)
-> 插件开发文档：[docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows)
+> 插件开发文档：[docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows/blob/main/docs/PLUGIN.md)
 
 本仓库**只包含插件自己**：Rust 源码、`config.json`、打包脚本、发版 CI。
 面板的界面不是代码，而是 `config.json` 里的声明（`plugin_setting`），由本体按声明渲染 —— 所以插件的 UI 与逻辑都在这个仓库里，本体没有任何关于「图床」的硬编码。
@@ -12,10 +12,10 @@
 
 ## 安装
 
-### 自动（推荐）
+### 内置分发（推荐）
 
-本体启动时按 `plugins/manifest.json` 里登记的版本去 Release 拉包并校验 sha256，解压到
-`%APPDATA%\RCGUI\plugins\imagehost\`。升级时改 manifest 里的 `tag` 即可。
+内置分发：构建本体时 `scripts/fetch_plugins.ps1` 按 `plugins/manifest.json` 登记的版本与本仓库 [Release](https://github.com/h897105167/rcgui-plugin-imagehost/releases) 下载 zip、校验 sha256，解包到 `crates/app/assets/plugins/imagehost/`；本体启动时再释放到 `%APPDATA%\RCGUI\plugins\imagehost\`。
+升级 = 改本体 manifest 里的 `tag` 与 `sha256`（zip 的哈希）。
 
 ### 手动
 
@@ -131,7 +131,7 @@ bash scripts/pack.sh               # Linux / macOS / CI
 插件是一个 **WASI 命令行程序**：每次调用，本体把一段 JSON 写到 stdin，插件把一段 JSON 写到 stdout。
 需要宿主能力时，插件返回 `{"need":[{"cap":"...","params":{...}}]}`，本体执行后带着结果重新运行插件。
 完整协议、能力清单、面板 schema、命名规则、接入与分发规则见本体的
-**[docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows)**。
+**[docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows/blob/main/docs/PLUGIN.md)**。
 
 本插件声明的能力：`kv`（索引与配置）、`fs`（读本地图片、路径选择）、`http`（下载远程图片做校验）、
 `rclone`（列目录、复制文件）、`ui`（提示与剪贴板）、`env`（数据目录）。
