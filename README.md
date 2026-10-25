@@ -124,6 +124,7 @@ bash scripts/pack.sh               # Linux / macOS / CI
 | `copy-link` | 无 HTTP 路由，直接 `ui.copy` | `status:"已复制"` |
 | `shutdown` / `exit` | 不请求任何宿主能力 | `status:"ok"` |
 | `http` | `params.http` 原样分发 | 与旧版一致，路由表不变 |
+| `detect-port` | 无 HTTP 路由，直接读本体的 `%APPDATA%\RCGUI\config.json` | `values.http_port`（本体当前的端口）+ `status`，用来把面板里的端口对齐到本体设置 |
 
 面板可写回本体的字段：`status`、`lamp`（`ok`/`warn`/`err`）、`checks`（`[{label,value,ok}]`）、
 `hints`（`{key:text}`）、`values`（回填进表单）、`enabled`、`progress`（负数 = 不确定进度）、
@@ -131,6 +132,36 @@ bash scripts/pack.sh               # Linux / macOS / CI
 
 新增的宿主能力调用：`fs.read_b64`（读待上传文件，上限 64 MiB）、`rclone.cat`（读图片字节，上限 32 MiB）、
 `ui.copy`（复制直链）。
+
+---
+
+## HTTP 上传服务（给外部客户端用）
+
+除了面板上的按钮，本插件还接住本体转发来的、专门用于图床的 HTTP 请求。外部客户端（例如 Obsidian 插件
+`image-upload-rcgui`）把图片 POST 过来，拿回直链或短链。
+
+端口不归插件管：本体的「插件 HTTP 服务」端口（设置里那一项，默认 `5273`）决定入口；端口被占用时由本体提示
+「端口被占用」，插件面板里的「服务」分组只是显示/对齐它（「检测端口」按钮读取本体 `config.json` 里的 `http_port`）。
+
+| 路由 | 说明 |
+|---|---|
+| `GET /plugin/imagehost/ping` | 探活 + 读服务端配置：`{ok, plugin, version, port, max_mb, max_bytes, compress, short, remote, dir, upload_path, upload_url, accept}` |
+| `POST /plugin/imagehost/upload?name=<文件名>` | 上传一张图。body **直接放图片字节**（推荐），`Content-Type` 填图片 MIME；也接受 `multipart/form-data`（字段名 `file` 或 `image`） |
+| `GET /plugin/imagehost/i/...` | 直链代理（本体把该路径转给插件，插件用 `rclone.cat` 读字节） |
+
+成功响应（200）：
+
+```json
+{"ok":true,"url":"https://…/x.png","short_url":"http://i71i.com/l8zk","name":"x.png",
+ "stored":"image_bed/x.png","remote":"k-vault","content_type":"image/png","size":8,
+ "original_size":8,"compressed":false,"deduped":false}
+```
+
+* 超过「单张上限」（面板里的 `max_mb`，默认 20 MB）时，若 `compress` 开着，插件先在 WASM 里解码、必要时
+  重新编码成 JPG 压到上限内，再上传；`note` 字段会说明压了多少。压不动或 `compress` 关着则返回 413。
+* `short` 开着时会顺手取短链；短链服务失败不影响直链，失败原因在 `short_error`。
+* 同名文件默认不覆盖：命中已有索引会直接复用（`deduped:true`）；没有索引但远端已有同名文件时改名为 `name-1.png`。
+* multipart 走本体解析，**实测 2 MB 以上会被本体判成「multipart 里没有文件」**，所以大图请用原始字节 body。
 
 ---
 

@@ -1,4 +1,4 @@
-//! imagehost 插件 v0.5.0：图床（上传 → 直链 → 短链）
+//! imagehost 插件 v0.6.0：图床（上传 → 直链 → 短链）+ HTTP 上传服务
 //!
 //! 这是 rclone GUI 0.2.0 里那块「图床工具（上传 → 直链 → 短链）」原生面板的
 //! 独立插件版：界面完全由 `config.json` 的 `plugin_setting.controls` 声明，
@@ -26,6 +26,14 @@ const HISTORY_MAX: usize = 8;
 const MAX_FILE: u64 = 32 * 1024 * 1024;
 /// 本机代理直链的前缀：宿主把 `/plugin/imagehost/**` 转给本插件。
 const ROUTE_PREFIX: &str = "/i/";
+/// 外部客户端上传图片的入口：`POST /plugin/imagehost/upload`。
+const UPLOAD_ROUTE: &str = "upload";
+/// 服务自述入口（客户端探测端口 / 上限用）：`GET /plugin/imagehost/ping`。
+const PING_ROUTE: &str = "ping";
+/// 图片大小上限的默认值（MB）。
+const DEFAULT_MAX_MB: u32 = 20;
+/// 压缩时最多缩到这个边长，再小就认输。
+const MIN_SIDE: u32 = 64;
 
 fn main() {
     let mut raw = String::new();
@@ -133,6 +141,14 @@ struct Cfg {
     /// 用户自填的直链前缀（0.2.0 的「公网地址」）；留空则用本机服务地址。
     #[serde(alias = "lastlink")]
     base: String,
+    /// HTTP 上传服务的图片大小上限（MB）：超过就压缩后再传。
+    max_mb: u32,
+    /// 超过上限时压缩（关掉就只报错，不动用户的图）。
+    compress: bool,
+    /// 上次探测到的宿主 HTTP 服务端口（0 = 还没探测过）。
+    http_port: u16,
+    /// 探测时记下的上传地址，面板上直接显示、可复制。
+    http_url: String,
 }
 
 impl Default for Cfg {
@@ -153,6 +169,10 @@ impl Default for Cfg {
             dedupe: true,
             path_history: Vec::new(),
             base: String::new(),
+            max_mb: DEFAULT_MAX_MB,
+            compress: true,
+            http_port: 0,
+            http_url: String::new(),
         }
     }
 }
@@ -214,6 +234,12 @@ fn apply_form(cfg: &mut Cfg, form: &Map<String, Value>) {
     if let Some(v) = get("short_rate") {
         cfg.short_rate = v.trim().parse::<u32>().unwrap_or(cfg.short_rate).max(1);
     }
+    if let Some(v) = get("max_mb") {
+        cfg.max_mb = v.trim().parse::<u32>().unwrap_or(cfg.max_mb).clamp(1, 2048);
+    }
+    if let Some(v) = form.get("compress") {
+        cfg.compress = truthy(v);
+    }
 }
 
 fn truthy(v: &Value) -> bool {
@@ -257,6 +283,10 @@ fn values_of(cfg: &Cfg) -> Value {
         "short_key": cfg.short_key,
         "last_link": cfg.last_link,
         "last_short": cfg.last_short,
+        "max_mb": cfg.max_mb.to_string(),
+        "compress": if cfg.compress { "true" } else { "false" },
+        "http_port": cfg.http_port.to_string(),
+        "http_url": cfg.http_url,
     })
 }
 
@@ -319,9 +349,9 @@ fn next(
 // ---------------------------------------------------------------- 请求入口
 
 fn handle_request(id: Value, params: &Value) -> Value {
-    // HTTP 入口（`/plugin/imagehost/i/…`）：直接回图片字节。
+    // HTTP 入口（`/plugin/imagehost/**`）：上传服务、自述、直链代理都在这里分派。
     if let Some(http) = params.get("http").filter(|v| v.is_object()) {
-        return serve_image(id, params, http);
+        return serve_http(id, params, http);
     }
 
     let action = s(params.get("action"));
@@ -382,6 +412,7 @@ fn handle_request(id: Value, params: &Value) -> Value {
         }
         "copy-link" => act_copy(id, cfg, false),
         "copy-short" => act_copy(id, cfg, true),
+        "detect-port" => act_detect_port(id, &action, step, &form, cfg, &provided),
         "run" | "upload" => act_run(id, &action, step, &form, cfg, &provided, &work),
         other => err_panel(&id, &cfg, &format!("未知动作：{other}")),
     }
@@ -618,13 +649,24 @@ fn act_run(
             if let Some(e) = cap_err(&file) {
                 return err_panel(&id, &cfg, &format!("读取图片失败：{e}"));
             }
-            let data_b64 = s(file.get("data_b64"));
+            let mut data_b64 = s(file.get("data_b64"));
             if data_b64.is_empty() {
                 return err_panel(&id, &cfg, "读到的图片是空的");
             }
-            let base_name = file_name(&cfg.upload_path);
+            let mut base_name = file_name(&cfg.upload_path);
             if base_name.is_empty() {
                 return err_panel(&id, &cfg, "看不出文件名，检查「上传图片路径」");
+            }
+            // 超过上限就压一压：和 HTTP 上传走同一套逻辑。
+            let mut shrunk = String::new();
+            match shrink_if_needed(&base_name, &data_b64, &cfg) {
+                Ok(Some((b64, name, note))) => {
+                    data_b64 = b64;
+                    base_name = name;
+                    shrunk = note;
+                }
+                Ok(None) => {}
+                Err(e) => return err_panel(&id, &cfg, &e),
             }
             let mut existing: Vec<String> = Vec::new();
             for it in as_list(provided.get("list").unwrap_or(&Value::Null)) {
@@ -656,6 +698,9 @@ fn act_run(
             }
             let mut work = work.clone();
             work.insert("name".to_string(), json!(final_name));
+            if !shrunk.is_empty() {
+                work.insert("shrunk".to_string(), json!(shrunk));
+            }
             if let Some(env) = provided.get("env") {
                 work.insert("env".to_string(), env.clone());
             }
@@ -833,6 +878,9 @@ fn finish_upload(id: &Value, mut cfg: Cfg, work: &Map<String, Value>, source: Op
     if let Some(src) = source.filter(|s| !s.is_empty()) {
         status.push_str(&format!("（直链来源：{src}）"));
     }
+    if let Some(note) = work.get("shrunk").map(vstr).filter(|n| !n.is_empty()) {
+        status.push_str(&format!("；{note}"));
+    }
     if deduped {
         status.push_str("；站点已有同一份内容，直接复用了旧文件");
     }
@@ -1007,6 +1055,782 @@ fn first_line(text: &str) -> String {
         .find(|l| !l.is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+// ---------------------------------------------------------------- HTTP 上传服务
+
+/// `/plugin/imagehost/**` 的 HTTP 分派：`ping` 自述、`upload` 收图，其余都当直链代理。
+fn serve_http(id: Value, params: &Value, http: &Value) -> Value {
+    let path = s(http.get("path"));
+    let head = path
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if head == PING_ROUTE {
+        return serve_ping(id, params);
+    }
+    if head == UPLOAD_ROUTE {
+        return serve_upload(id, params, http);
+    }
+    // `/i/<远程>:<路径>` 等其它路径照旧当直链代理。
+    serve_image(id, params, http)
+}
+
+/// `/plugin/imagehost/ping`：外部客户端先问这里，拿到入口地址、上限和压缩开关再上传。
+fn serve_ping(id: Value, params: &Value) -> Value {
+    let prev = params.get("state").cloned().unwrap_or(Value::Null);
+    let step = prev.get("step").and_then(|v| v.as_u64()).unwrap_or(0);
+    let provided = params.get("provided").cloned().unwrap_or(Value::Null);
+
+    match step {
+        0 => json!({
+            "id": id,
+            "need": [
+                need("kv.get_all", "kv", json!({})),
+                need("env.info", "env", json!({})),
+            ],
+            "state": { "step": 1 }
+        }),
+        1 => {
+            // kv 只在这一步有，先把配置钉进 state，免得下一步读成默认值。
+            let (cfg, _) = load_cfg(&provided);
+            let data_dir = data_dir_of(&provided);
+            if data_dir.is_empty() {
+                return serve_upload_info(&id, cfg, 0);
+            }
+            next_http(
+                &id,
+                vec![host_cfg_need(&data_dir)],
+                json!({ "step": 2, "cfg": cfg }),
+            )
+        }
+        _ => {
+            let cfg = match cfg_from_state(&prev) {
+                Some(c) => c,
+                None => load_cfg(&provided).0,
+            };
+            serve_upload_info(&id, cfg, host_port_of(&provided))
+        }
+    }
+}
+
+/// ping 的正文：客户端照着 `upload_url` 传就行。
+fn serve_upload_info(id: &Value, cfg: Cfg, port: u16) -> Value {
+    let origin = origin_of(port);
+    let path = format!("/plugin/{PLUGIN_ID}/{UPLOAD_ROUTE}");
+    http_json(
+        id,
+        200,
+        json!({
+            "ok": true,
+            "plugin": PLUGIN_ID,
+            "version": env!("CARGO_PKG_VERSION"),
+            "port": port,
+            "upload_url": if origin.is_empty() { String::new() } else { format!("{origin}{path}") },
+            "upload_path": path,
+            "accept": "POST multipart/form-data（字段名 file / image）或直接把图片字节当 body",
+            "max_mb": cfg.max_mb,
+            "max_bytes": limit_of(&cfg) as u64,
+            "compress": cfg.compress,
+            "short": cfg.short_tpl == 1,
+            "remote": cfg.remote,
+            "dir": norm_dir(&cfg.path),
+        }),
+    )
+}
+
+/// `/plugin/imagehost/upload`：外部客户端把图片发进来 → 传上远程 → 回直链/短链。
+fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
+    let prev = params.get("state").cloned().unwrap_or(Value::Null);
+    let step = prev.get("step").and_then(|v| v.as_u64()).unwrap_or(0);
+    let provided = params.get("provided").cloned().unwrap_or(Value::Null);
+
+    if step == 0 {
+        return json!({
+            "id": id,
+            "need": [
+                need("kv.get_all", "kv", json!({})),
+                need("env.info", "env", json!({})),
+            ],
+            "state": { "step": 1 }
+        });
+    }
+
+    let (cfg, _) = match cfg_from_state(&prev) {
+        Some(c) => (c, false),
+        None => load_cfg(&provided),
+    };
+    let work: Map<String, Value> = prev
+        .get("work")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    match step {
+        1 => {
+            if cfg.remote.trim().is_empty() {
+                return http_json(
+                    &id,
+                    503,
+                    json!({
+                        "ok": false,
+                        "error": "插件还没选存储远程：先在 RCGUI 的「图床」面板里选一个远程并保存",
+                    }),
+                );
+            }
+            let (name, bytes) = match parse_upload(http) {
+                Ok(v) => v,
+                Err((code, msg)) => return http_json(&id, code, json!({ "ok": false, "error": msg })),
+            };
+            if bytes.is_empty() {
+                return http_json(&id, 400, json!({ "ok": false, "error": "收到的图片是空的" }));
+            }
+            if bytes.len() > limit_of(&cfg) && !cfg.compress {
+                return http_json(
+                    &id,
+                    413,
+                    json!({
+                        "ok": false,
+                        "error": format!(
+                            "图片 {:.1} MB 超过 {} MB 上限，而且「超限压缩」是关的",
+                            mb(bytes.len()),
+                            cfg.max_mb
+                        ),
+                        "max_bytes": limit_of(&cfg) as u64,
+                    }),
+                );
+            }
+            let dir = norm_dir(&cfg.path);
+            let mut needs = vec![need(
+                "rclone.call",
+                "list",
+                json!({
+                    "method": "operations/list",
+                    "params": { "fs": format!("{}:", cfg.remote), "remote": dir, "no_modtime": true }
+                }),
+            )];
+            let data_dir = data_dir_of(&provided);
+            if !data_dir.is_empty() {
+                needs.push(host_cfg_need(&data_dir));
+            }
+            let mut work = Map::new();
+            work.insert("name".to_string(), json!(name));
+            work.insert("orig".to_string(), json!(bytes.len()));
+            next_http(&id, needs, json!({ "step": 2, "cfg": cfg, "work": work }))
+        }
+        2 => {
+            let (name, bytes) = match parse_upload(http) {
+                Ok(v) => v,
+                Err((code, msg)) => return http_json(&id, code, json!({ "ok": false, "error": msg })),
+            };
+            let dir = norm_dir(&cfg.path);
+            let port = host_port_of(&provided);
+
+            let mut existing: Vec<String> = Vec::new();
+            for it in as_list(provided.get("list").unwrap_or(&Value::Null)) {
+                let is_dir = it
+                    .get("IsDir")
+                    .or_else(|| it.get("isDir"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if is_dir {
+                    continue;
+                }
+                let n = s(it.get("Name"));
+                if !n.is_empty() {
+                    existing.push(n);
+                }
+            }
+
+            // 同名文件已经在远程上：开着「去重」就直接把旧文件的直链回过去。
+            let stored = join_dir(&dir, &name);
+            if cfg.dedupe && existing.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                let link = if cfg.base.trim().is_empty() {
+                    proxy_link(&cfg, &origin_of(port), &stored)
+                } else {
+                    proxy_link(&cfg, "", &stored)
+                };
+                let mut work = work.clone();
+                work.insert("name".to_string(), json!(name));
+                work.insert("stored".to_string(), json!(stored));
+                work.insert("deduped".to_string(), json!(true));
+                work.insert("size".to_string(), json!(bytes.len()));
+                work.insert("link".to_string(), json!(link));
+                return http_after_link(&id, cfg, work);
+            }
+
+            // 超过上限就压一压（和面板上传同一套逻辑）。
+            let (bytes, name, note) = match shrink_bytes(&name, &bytes, &cfg) {
+                Ok(Some((out, new_name, note))) => (out, new_name, note),
+                Ok(None) => (bytes, name, String::new()),
+                Err(e) => return http_json(&id, 413, json!({ "ok": false, "error": e })),
+            };
+
+            let (stem, ext) = split_ext(&name);
+            let mut final_name = name.clone();
+            if existing.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                final_name = resolve_conflict(&existing, &stem, &ext);
+            }
+
+            let orig = work
+                .get("orig")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(bytes.len() as u64);
+            let mut work = Map::new();
+            work.insert("name".to_string(), json!(final_name));
+            work.insert("orig".to_string(), json!(orig));
+            work.insert("size".to_string(), json!(bytes.len()));
+            if !note.is_empty() {
+                work.insert("shrunk".to_string(), json!(note));
+            }
+            let needs = vec![need(
+                "rclone.upload_file",
+                "up",
+                json!({
+                    "fs": format!("{}:{}", cfg.remote, dir),
+                    "remote_path": final_name,
+                    "filename": final_name,
+                    "data_b64": encode_b64(&bytes),
+                }),
+            )];
+            next_http(&id, needs, json!({ "step": 3, "cfg": cfg, "work": work }))
+        }
+        3 => {
+            let up = provided.get("up").cloned().unwrap_or(Value::Null);
+            if let Some(e) = cap_err(&up) {
+                return http_json(&id, 502, json!({ "ok": false, "error": format!("上传失败：{e}") }));
+            }
+            let dir = norm_dir(&cfg.path);
+            let name = s(work.get("name"));
+            let stored = join_dir(&dir, &name);
+            let mut work = work.clone();
+            work.insert("stored".to_string(), json!(stored));
+            if up.get("deduped").and_then(|v| v.as_bool()).unwrap_or(false) {
+                work.insert("deduped".to_string(), json!(true));
+            }
+            let site = s(up.get("link")).trim().to_string();
+            let link = if !site.is_empty() {
+                work.insert("source".to_string(), json!("站点"));
+                site
+            } else {
+                work.insert("source".to_string(), json!("本机代理"));
+                proxy_link(&cfg, &origin_of(host_port_of(&provided)), &stored)
+            };
+            if link.is_empty() {
+                return http_json(
+                    &id,
+                    502,
+                    json!({
+                        "ok": false,
+                        "error": "文件传上去了，但拿不到直链：该远程不支持公开链接，也没取到本机服务端口",
+                        "stored": stored,
+                    }),
+                );
+            }
+            work.insert("link".to_string(), json!(link));
+            http_after_link(&id, cfg, work)
+        }
+        _ => {
+            let resp = provided.get("short").cloned().unwrap_or(Value::Null);
+            let mut work = work.clone();
+            if let Some(e) = cap_err(&resp) {
+                work.insert("short_err".to_string(), json!(e));
+            } else {
+                let code = resp.get("status").and_then(|v| v.as_u64()).unwrap_or(0);
+                let body = resp.get("body").map(vstr).unwrap_or_default();
+                if code != 0 && !(200..300).contains(&code) {
+                    work.insert(
+                        "short_err".to_string(),
+                        json!(format!("短链服务返回 HTTP {code}：{}", first_line(&body))),
+                    );
+                } else {
+                    match parse_short(cfg.short_fmt, &body) {
+                        Ok(x) => {
+                            work.insert("short".to_string(), json!(x));
+                        }
+                        Err(e) => {
+                            work.insert("short_err".to_string(), json!(e));
+                        }
+                    }
+                }
+            }
+            http_done(&id, cfg, work)
+        }
+    }
+}
+
+/// 直链到手：开了短链模板就再插一轮 HTTP 请求换短链，否则直接回 JSON。
+fn http_after_link(id: &Value, mut cfg: Cfg, work: Map<String, Value>) -> Value {
+    let link = s(work.get("link"));
+    if cfg.short_tpl != 1 {
+        return http_done(id, cfg, work);
+    }
+    match short_request(&cfg, &link) {
+        Ok((method, url, body, headers)) => {
+            let mut p = Map::new();
+            p.insert("method".to_string(), json!(method));
+            p.insert("url".to_string(), json!(url));
+            if !headers.is_empty() {
+                p.insert("headers".to_string(), json!(headers));
+            }
+            if let Some(b) = body {
+                p.insert("body".to_string(), json!(b));
+            }
+            p.insert("timeout_ms".to_string(), json!(15000));
+            p.insert("max_bytes".to_string(), json!(1048576));
+            next_http(
+                id,
+                vec![need("http.request", "short", Value::Object(p))],
+                json!({ "step": 4, "cfg": cfg, "work": work }),
+            )
+        }
+        Err(e) => {
+            let mut work = work;
+            work.insert("short_err".to_string(), json!(e));
+            // 短链没换成不算失败：直链照给，客户端自己决定用不用短链。
+            cfg.short_tpl = 0;
+            http_done(id, cfg, work)
+        }
+    }
+}
+
+/// HTTP 上传的收尾：顺手把「上次直链/短链」记进配置，面板上一眼能看见。
+fn http_done(id: &Value, mut cfg: Cfg, work: Map<String, Value>) -> Value {
+    let link = s(work.get("link"));
+    let short = s(work.get("short"));
+    let stored = s(work.get("stored"));
+    let name = s(work.get("name"));
+    let short_err = s(work.get("short_err"));
+    let deduped = work
+        .get("deduped")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let size = work.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+    let orig = work.get("orig").and_then(|v| v.as_u64()).unwrap_or(size);
+    let note = work.get("shrunk").map(vstr).unwrap_or_default();
+    let content_type = guess_content_type(&name);
+
+    cfg.last_link = link.clone();
+    if !short.is_empty() {
+        cfg.last_short = short.clone();
+    }
+    remember_path(&mut cfg, &dirname(&stored));
+
+    let mut body = Map::new();
+    body.insert("ok".to_string(), json!(true));
+    body.insert("url".to_string(), json!(link));
+    body.insert(
+        "short_url".to_string(),
+        if short.is_empty() { Value::Null } else { json!(short) },
+    );
+    body.insert("name".to_string(), json!(name));
+    body.insert("stored".to_string(), json!(stored));
+    body.insert("remote".to_string(), json!(cfg.remote));
+    body.insert("content_type".to_string(), json!(content_type));
+    body.insert("size".to_string(), json!(size));
+    body.insert("original_size".to_string(), json!(orig));
+    body.insert("compressed".to_string(), json!(!note.is_empty()));
+    if !note.is_empty() {
+        body.insert("note".to_string(), json!(note));
+    }
+    body.insert("deduped".to_string(), json!(deduped));
+    if !short_err.is_empty() {
+        body.insert("short_error".to_string(), json!(short_err));
+    }
+    json!({
+        "id": id,
+        "ops": [save_op(&cfg)],
+        "result": { "status": 200, "body": Value::Object(body) }
+    })
+}
+
+fn http_json(id: &Value, status: u16, body: Value) -> Value {
+    json!({
+        "id": id,
+        "ops": [],
+        "result": { "status": status, "body": body }
+    })
+}
+
+fn next_http(id: &Value, needs: Vec<Value>, state: Value) -> Value {
+    json!({ "id": id, "need": needs, "state": state })
+}
+
+/// 把请求体认成图片：multipart / 裸字节 / JSON 三种写法都接。
+fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
+    let query_name = s(http.get("query").and_then(|q| q.get("name")));
+    let ctype = s(http.get("headers").and_then(|h| h.get("content-type"))).to_ascii_lowercase();
+
+    // 1) multipart/form-data：宿主已经拆好了，文件在 files[] 里。
+    if let Some(mp) = http.get("multipart").filter(|v| v.is_object()) {
+        let want = s(mp.get("fields").and_then(|f| f.get("name")));
+        let mut saw_file = false;
+        if let Some(files) = mp.get("files").and_then(|v| v.as_array()) {
+            for f in files {
+                let data = s(f.get("dataB64"));
+                if data.is_empty() {
+                    saw_file = true;
+                    continue;
+                }
+                let bytes = decode_b64(&data)?;
+                let given = if want.trim().is_empty() {
+                    s(f.get("filename"))
+                } else {
+                    want.trim().to_string()
+                };
+                return Ok((upload_name(&given, &ctype), bytes));
+            }
+        }
+        if saw_file {
+            return Err((
+                413,
+                "文件字段是空的：RCGUI 宿主对 multipart 的单个字段有大小上限，大图请改用裸字节 POST（图片字节直接当 body，文件名放 ?name=）".to_string(),
+            ));
+        }
+        return Err((
+            400,
+            "multipart 里没有文件：字段名用 file / image 都认，也可以把图片字节直接当 body".to_string(),
+        ));
+    }
+
+    let raw = s(http.get("body_b64"));
+    if raw.is_empty() {
+        return Err((
+            400,
+            "请求体是空的：把图片放在 multipart 的 file 字段，或直接发图片字节".to_string(),
+        ));
+    }
+    let bytes = decode_b64(&raw)?;
+
+    // 2) JSON：{"filename": "a.png", "data_b64": "..."}，有的客户端喜欢这么发。
+    if ctype.contains("json") || bytes.first() == Some(&b'{') {
+        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+            let data = ["data_b64", "data", "base64"]
+                .iter()
+                .map(|k| s(v.get(*k)))
+                .find(|t| !t.is_empty());
+            if let Some(data) = data {
+                let given = ["filename", "name", "file"]
+                    .iter()
+                    .map(|k| s(v.get(*k)))
+                    .find(|t| !t.is_empty())
+                    .unwrap_or_else(|| query_name.clone());
+                let bytes = decode_b64(&data)?;
+                return Ok((upload_name(&given, &ctype), bytes));
+            }
+            if ctype.contains("json") {
+                return Err((400, "JSON 里没有 data_b64 / data / base64 字段".to_string()));
+            }
+        } else if ctype.contains("json") {
+            return Err((400, "JSON 解析失败".to_string()));
+        }
+    }
+
+    // 3) 裸字节：名字只能从 `?name=` 或 content-type 猜。
+    Ok((upload_name(&query_name, &ctype), bytes))
+}
+
+/// 文件名兜底：去掉路径分隔符；没有扩展名就按 content-type 补一个。
+fn upload_name(given: &str, ctype: &str) -> String {
+    let mut out: String = file_name(given)
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if out.trim().is_empty() {
+        out = "image".to_string();
+    }
+    let (_, ext) = split_ext(&out);
+    if ext.is_empty() {
+        let guess = if ctype.contains("jpeg") || ctype.contains("jpg") {
+            "jpg"
+        } else if ctype.contains("png") {
+            "png"
+        } else if ctype.contains("webp") {
+            "webp"
+        } else if ctype.contains("gif") {
+            "gif"
+        } else if ctype.contains("bmp") {
+            "bmp"
+        } else if ctype.contains("avif") {
+            "avif"
+        } else {
+            ""
+        };
+        if !guess.is_empty() {
+            out.push('.');
+            out.push_str(guess);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------- 压缩
+
+/// 面板上传用的一层壳：读进来的是 base64，压完再编回去。
+fn shrink_if_needed(
+    name: &str,
+    data_b64: &str,
+    cfg: &Cfg,
+) -> Result<Option<(String, String, String)>, String> {
+    if limit_of(cfg) == 0 {
+        return Ok(None);
+    }
+    let bytes = match decode_b64(data_b64) {
+        Ok(b) => b,
+        Err((_, e)) => return Err(e),
+    };
+    match shrink_bytes(name, &bytes, cfg)? {
+        Some((out, new_name, note)) => Ok(Some((encode_b64(&out), new_name, note))),
+        None => Ok(None),
+    }
+}
+
+/// 超过上限就等比缩小重编码；面板上传（base64）和 HTTP 上传（裸字节）共用这一份。
+fn shrink_bytes(
+    name: &str,
+    bytes: &[u8],
+    cfg: &Cfg,
+) -> Result<Option<(Vec<u8>, String, String)>, String> {
+    let limit = limit_of(cfg);
+    if bytes.len() <= limit {
+        return Ok(None);
+    }
+    let fmt = image::guess_format(bytes)
+        .map_err(|_| "认不出图片格式（支持 png / jpg / webp），没法压缩".to_string())?;
+    let img = image::load_from_memory_with_format(bytes, fmt)
+        .map_err(|e| format!("图片解码失败：{e}"))?;
+    let alpha = img.color().has_alpha();
+    let (w0, h0) = (img.width().max(1), img.height().max(1));
+    let mut scale = 1.0f32;
+    let mut last = bytes.len();
+
+    for round in 0..12u8 {
+        let w = ((w0 as f32 * scale).round() as u32).max(MIN_SIDE).min(w0);
+        let h = ((h0 as f32 * scale).round() as u32).max(MIN_SIDE).min(h0);
+        let (out, ext) = encode_image(&img, w, h, alpha, round)?;
+        last = out.len();
+        if out.len() <= limit {
+            let note = format!(
+                "原图 {:.1} MB 超过 {} MB，已压成 {}×{} 的 {}（{:.1} MB）",
+                mb(bytes.len()),
+                cfg.max_mb,
+                w,
+                h,
+                ext.to_uppercase(),
+                mb(out.len())
+            );
+            return Ok(Some((out, renamed(name, ext), note)));
+        }
+        if w <= MIN_SIDE && h <= MIN_SIDE {
+            break;
+        }
+        scale *= 0.82;
+    }
+    Err(format!(
+        "压到 {}px 还是降不到 {} MB（现在 {:.1} MB）",
+        MIN_SIDE,
+        cfg.max_mb,
+        mb(last)
+    ))
+}
+
+/// 缩到 `w×h` 再编码：带透明通道留 PNG，其余转 JPEG（体积差一个量级）。
+fn encode_image(
+    img: &image::DynamicImage,
+    w: u32,
+    h: u32,
+    alpha: bool,
+    round: u8,
+) -> Result<(Vec<u8>, &'static str), String> {
+    use image::ImageEncoder as _;
+    let scaled = if (w, h) == (img.width(), img.height()) {
+        img.clone()
+    } else {
+        img.resize_exact(w, h, image::imageops::FilterType::Lanczos3)
+    };
+    let mut out: Vec<u8> = Vec::new();
+    if alpha {
+        let rgba = scaled.to_rgba8();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+            .map_err(|e| format!("PNG 编码失败：{e}"))?;
+        Ok((out, "png"))
+    } else {
+        // 每轮顺手再降一点质量，尺寸兜底时才不至于只能压到 64px。
+        let quality = 82u8.saturating_sub(round * 4).max(52);
+        let rgb = scaled.to_rgb8();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
+            .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+            .map_err(|e| format!("JPEG 编码失败：{e}"))?;
+        Ok((out, "jpg"))
+    }
+}
+
+/// 换了格式就顺手换扩展名。
+fn renamed(name: &str, ext: &str) -> String {
+    let (stem, old) = split_ext(name);
+    if old.eq_ignore_ascii_case(ext) {
+        return name.to_string();
+    }
+    format!("{stem}.{ext}")
+}
+
+// ---------------------------------------------------------------- 服务口径
+
+/// 上限的字节数。
+fn limit_of(cfg: &Cfg) -> usize {
+    (cfg.max_mb.max(1) as usize) * 1024 * 1024
+}
+
+fn mb(n: usize) -> f64 {
+    (n as f64) / (1024.0 * 1024.0)
+}
+
+/// 本机服务的根地址；端口没探到就空串（调用方自己兜）。
+fn origin_of(port: u16) -> String {
+    if port == 0 {
+        String::new()
+    } else {
+        format!("http://127.0.0.1:{port}")
+    }
+}
+
+/// 直链：站点直链拿不到时用本机代理，`<base 或 origin>/plugin/imagehost/i/<远程>:<路径>`。
+fn proxy_link(cfg: &Cfg, origin: &str, stored: &str) -> String {
+    let mut base = cfg.base.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        base = origin.trim_end_matches('/').to_string();
+    }
+    if base.is_empty() || stored.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{base}/plugin/{PLUGIN_ID}{ROUTE_PREFIX}{}:{}",
+        cfg.remote,
+        uri_path(stored)
+    )
+}
+
+fn data_dir_of(provided: &Value) -> String {
+    s(provided.get("env").and_then(|e| e.get("data_dir")))
+}
+
+fn settings_path(data_dir: &str) -> String {
+    let d = data_dir.trim_end_matches(['\\', '/']);
+    format!("{d}\\config.json")
+}
+
+fn host_cfg_need(data_dir: &str) -> Value {
+    need(
+        "fs.read_text",
+        "host_cfg",
+        json!({ "path": settings_path(data_dir), "max_bytes": 1048576 }),
+    )
+}
+
+/// 宿主配置里的 `http.port`（本机服务端口）；没读到就是 0。
+fn host_port_of(provided: &Value) -> u16 {
+    let raw = provided.get("host_cfg").cloned().unwrap_or(Value::Null);
+    if cap_err(&raw).is_some() {
+        return 0;
+    }
+    let text = raw
+        .get("text")
+        .map(vstr)
+        .unwrap_or_else(|| vstr(&unwrap_result(&raw)));
+    json_port(&text)
+}
+
+fn encode_b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn decode_b64(text: &str) -> Result<Vec<u8>, (u16, String)> {
+    use base64::Engine as _;
+    let cleaned: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes()) {
+        return Ok(b);
+    }
+    base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(cleaned.as_bytes())
+        .map_err(|_| (400, "data_b64 不是有效的 base64".to_string()))
+}
+
+/// 面板上的「探测端口」：读宿主 config.json 的 http.port，把上传地址写回面板。
+fn act_detect_port(
+    id: Value,
+    action: &str,
+    step: u64,
+    form: &Map<String, Value>,
+    mut cfg: Cfg,
+    provided: &Value,
+) -> Value {
+    match step {
+        0 => next(
+            &id,
+            vec![need("env.info", "env", json!({}))],
+            action,
+            1,
+            form,
+            &cfg,
+            &Map::new(),
+        ),
+        1 => {
+            let data_dir = data_dir_of(provided);
+            if data_dir.is_empty() {
+                return err_panel(&id, &cfg, "取不到 RCGUI 的数据目录：重启一下 RCGUI 再点「探测端口」");
+            }
+            next(
+                &id,
+                vec![host_cfg_need(&data_dir)],
+                action,
+                2,
+                form,
+                &cfg,
+                &Map::new(),
+            )
+        }
+        _ => {
+            let port = host_port_of(provided);
+            if port == 0 {
+                cfg.http_port = 0;
+                cfg.http_url = String::new();
+                return panel(
+                    &id,
+                    vec![save_op(&cfg)],
+                    &cfg,
+                    "没读到宿主端口：先确认 RCGUI 设置里的「HTTP 服务」是开着的",
+                    "warn",
+                    None,
+                );
+            }
+            cfg.http_port = port;
+            cfg.http_url = format!(
+                "{}/plugin/{PLUGIN_ID}/{UPLOAD_ROUTE}",
+                origin_of(port)
+            );
+            let status = format!(
+                "上传地址：{}（上限 {} MB，{}）",
+                cfg.http_url,
+                cfg.max_mb,
+                if cfg.compress {
+                    "超限自动压缩"
+                } else {
+                    "超限直接报错"
+                }
+            );
+            panel(&id, vec![save_op(&cfg)], &cfg, &status, "ok", None)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 直链代理

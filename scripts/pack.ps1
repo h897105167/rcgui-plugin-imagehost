@@ -1,4 +1,4 @@
-﻿# 打包插件：构建 → 组装目录包 → 生成 check.sha256 → 打 zip
+# 打包插件：构建 → 组装目录包 → 生成 check.sha256 → 打 zip
 #
 # 产物：dist/<id>-<version>.zip
 #   config.json
@@ -13,6 +13,12 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+
+# Keep the build machine's cargo home out of the published artifact: dependency
+# panic locations embed absolute paths, which would leak the user name and the
+# local directory layout into main.wasm.
+$cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME ".cargo" }
+$env:RUSTFLAGS = "$env:RUSTFLAGS --remap-path-prefix=$cargoHome=/cargo"
 
 if (-not $SkipBuild) {
     cargo build --release --target wasm32-wasip1

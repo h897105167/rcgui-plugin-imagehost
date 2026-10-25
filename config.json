@@ -1,7 +1,7 @@
 {
   "id": "imagehost",
   "name": "图床",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "entry": "main.wasm",
   "description": "基于 rclone 的图床：上传图片拿直链，可再换短链。",
   "author": "h897105167",
@@ -142,6 +142,49 @@
         "kind": "hint",
         "key": "short-tip",
         "text": "模板一：请求地址 + url + apikey；返回格式「无」表示服务端直接回纯文本链接。填好后点「保存设置」记住。"
+      },
+      {
+        "kind": "group",
+        "key": "g-http",
+        "label": "HTTP 上传服务（给外部客户端）"
+      },
+      {
+        "kind": "field",
+        "key": "max_mb",
+        "label": "体积上限 MB",
+        "field": "number",
+        "width": 90,
+        "line": "h1",
+        "placeholder": "20"
+      },
+      {
+        "kind": "field",
+        "key": "compress",
+        "label": "超限先压缩",
+        "field": "bool",
+        "default": "true",
+        "line": "h1"
+      },
+      {
+        "kind": "action",
+        "key": "detect-port",
+        "label": "检测服务",
+        "style": "secondary",
+        "line": "h1"
+      },
+      {
+        "kind": "field",
+        "key": "http_url",
+        "label": "上传地址",
+        "field": "text",
+        "width": 430,
+        "line": "h2",
+        "placeholder": "点「检测服务」自动填写"
+      },
+      {
+        "kind": "hint",
+        "key": "http-tip",
+        "text": "端口在「设置」页里配置（默认 5273，被占用会提示），勾上「随程序启动」后每次启动都会拉起这个上传服务。外部客户端探测 http://127.0.0.1:<端口>/plugin/imagehost/ping，上传走 POST /plugin/imagehost/upload。超过体积上限的图会先压缩再传；选了短链模板就返回短链，取不到时自动回退直链。"
       },
       {
         "kind": "action",

@@ -7,6 +7,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Keep the build machine's cargo home out of the published artifact: dependency
+# panic locations embed absolute paths, which would leak the user name and the
+# local directory layout into main.wasm.
+cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+command -v cygpath >/dev/null 2>&1 && cargo_home="$(cygpath -w "$cargo_home")"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$cargo_home=/cargo"
+
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   cargo build --release --target wasm32-wasip1
 fi
