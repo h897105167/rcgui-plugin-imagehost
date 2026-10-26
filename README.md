@@ -1,186 +1,162 @@
 # rcgui-plugin-imagehost
 
-**RCGUI 的图床插件** —— 把本地图片传到 rclone 远程，生成稳定直链，并维护一份可搜索的索引。
+**The image-host plugin for RCGUI** — send a local image to an rclone remote, get a stable direct link back, and shorten it if you want.
 
-> 本体仓库：[h897105167/rclone_gui_windows](https://github.com/h897105167/rclone_gui_windows)
-> 插件开发文档：[docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows/blob/main/docs/PLUGIN.md)
+English | [简体中文](README.zh-CN.md)
 
-本仓库**只包含插件自己**：Rust 源码、`config.json`、打包脚本、发版 CI。
-面板的界面不是代码，而是 `config.json` 里的声明（`plugin_setting`），由本体按声明渲染 —— 所以插件的 UI 与逻辑都在这个仓库里，本体没有任何关于「图床」的硬编码。
+> Host app: [h897105167/rclone_gui_windows](https://github.com/h897105167/rclone_gui_windows)
+> Plugin development guide: [docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows/blob/main/docs/PLUGIN.md)
 
----
+This repository holds the plugin and nothing else: the Rust source, `config.json`, the packaging scripts and the release workflow. Every control you see in RCGUI is declared by `plugin_setting` in `config.json`, and the host draws the panel — there is no HTML, no front-end bundle, no JavaScript.
 
-## 安装
+`config.json` also sets `"http_entry": true`, which makes the host hand `/plugin/imagehost/...` to this plugin. That is the door external clients use: the plugin answers a `ping` probe and accepts uploads over plain HTTP, so anything that can send a `POST` gets a link back without knowing rclone at all.
 
-### 内置分发（推荐）
+## Features
 
-内置分发：构建本体时 `scripts/fetch_plugins.ps1` 按 `plugins/manifest.json` 登记的版本与本仓库 [Release](https://github.com/h897105167/rcgui-plugin-imagehost/releases) 下载 zip、校验 sha256，解包到 `crates/app/assets/plugins/imagehost/`；本体启动时再释放到 `%APPDATA%\RCGUI\plugins\imagehost\`。
-升级 = 改本体 manifest 里的 `tag` 与 `sha256`（zip 的哈希）。
+| Area | What you get |
+| --- | --- |
+| Pick and upload | choose a remote, type a directory or browse to it, pick a local file — the plugin uploads it through rclone |
+| Direct link | site-type remotes such as K-Vault return their own public URL; plain remotes fall back to a link proxied by the host |
+| Short link | optional 模板一 conversion: request URL plus `url` and `apikey`, `GET` or `POST`, plain text / `JSON` / `JSONP` |
+| Dedupe | a same-named object in the upload directory either cancels the upload, or gets suffixed to `名字 (1).png` |
+| Size cap | `max_mb` (20 MB by default); past the cap the image is re-encoded to JPEG, or the upload is refused with 413 |
+| HTTP upload service | `ping` for probing, `upload` for uploading — this is what the Obsidian plugin talks to |
+| Copy buttons | `复制直链` / `复制短链` put the last result on the clipboard |
 
-### 手动
+## Install
 
-1. 从 [Releases](https://github.com/h897105167/rcgui-plugin-imagehost/releases) 下载 `imagehost-<版本>.zip`；
-2. 解压到 `%APPDATA%\RCGUI\plugins\imagehost\`，目录里应有 `config.json`、`main.wasm`、`check.sha256`；
-3. 重启 RCGUI，在「插件」页看到「图床」即可。
+- **Bundled.** RCGUI downloads the release archive named by `plugins/manifest.json`, verifies its SHA-256, unpacks it into `crates/app/assets/plugins/imagehost/` at build time, and copies it into `%APPDATA%\RCGUI\plugins\imagehost\` on first start. You do not install anything by hand.
+- **Manual.** Unpack `imagehost-<version>.zip` into `%APPDATA%\RCGUI\plugins\imagehost\`. The archive must contain `config.json`, `main.wasm` and `check.sha256`.
+- **Removal.** Disabling the plugin in RCGUI keeps the package and its settings; uninstalling deletes both, including the `kv` store that holds your remote, directory and token.
 
-卸载：插件页里的「卸载」会把包目录和该插件的 `kv` 数据一起删掉（索引也就没了），
-内置插件卸载后会留下墓碑，升级不会自动装回来。
+## Panel
 
----
+The panel is one form, declared top to bottom in `config.json`. Labels are still Chinese-only in this repository — the host can localise them with `{"zh":…,"en":…}` pairs (see `docs/PLUGIN.md` §2.1.1), but this plugin has not been migrated yet.
 
-## 功能
+| Key | Control | Label | What it does |
+| --- | --- | --- | --- |
+| `g-title` | group | 图床工具（上传 → 直链 → 短链） | section heading for the whole form |
+| `remote` | select | 存储的远程 | the rclone remote to store into; the list is read from rclone |
+| `refresh-remotes` | action | 刷新远程 | re-read the remote list from rclone |
+| `path` | path | 上传目录 | directory inside the remote; empty means the remote root |
+| `upload_path` | text | 上传图片路径 | absolute path of the local image — typed here or filled by `选择文件…` |
+| `pick` | action | 选择文件… | host file dialog, filtered to `png jpg jpeg gif webp bmp` |
+| `dedupe` | bool | 去重 | on by default: a same-named object cancels the upload instead of being overwritten |
+| `dedupe-tip` | hint | — | explains `去重` and the `名字 (1).png` fallback when it is off |
+| `short_tpl` | select | 短链模板 | `不选择` or `模板一`; `模板一` is the only built-in shape |
+| `g-tpl1` | group | 模板一参数 | parameters of the short-link template |
+| `short_fmt` | select | 返回格式 | `无` (plain text), `JSON` or `JSONP` |
+| `short_method` | select | 请求方式 | `GET` or `POST` |
+| `short_rate` | number | 每秒上限 | requests per second cap, 4 by default |
+| `short_callback` | text | JSONP 回调 | callback name used for `JSONP`, `callback` by default |
+| `short_url` | text | 请求地址 | endpoint of the short-link service |
+| `short_key` | password | api_key | sent with every request; required by `模板一` |
+| `short-tip` | hint | — | recaps the parameters, then points at `保存设置` |
+| `g-http` | group | HTTP 上传服务（给外部客户端） | the upload endpoint used by external clients |
+| `max_mb` | number | 体积上限（MB） | maximum accepted size, 20 MB by default |
+| `compress` | bool | 超限先压缩 | on by default: past the cap the image is re-encoded to JPEG before upload |
+| `detect-port` | action | 检测服务 | probes `127.0.0.1` for the host's HTTP port and fills `上传地址` |
+| `http_url` | text | 上传地址 | filled by `检测服务`; a display convenience, not a setting |
+| `http-tip` | hint | — | explains the port, `ping`, `upload`, compression and the short-link fallback |
+| `run` | action | 生成直链 | primary action: upload the image and produce the link |
+| `save` | action | 保存设置 | write the whole form into the plugin's `kv` store |
+| `copy-link` | action | 复制直链 | copy `直链` to the clipboard |
+| `last_link` | text | 直链 | the last direct link; also written by `run` |
+| `copy-short` | action | 复制短链 | copy `短链` to the clipboard |
+| `last_short` | text | 短链 | the last short link, empty when the template failed |
+| `state` | status | 状态 | lamp showing the result of the last action |
+| `link-tip` | hint | — | where the direct link comes from: site remote, or the host's proxy |
 
-| 能力 | 说明 |
-|---|---|
-| 上传 | 选一张本地图片，按当前命名规则传到指定 rclone 远程，返回直链 |
-| 去重 | 相同内容（sha1 + 大小）命中已有记录时直接复用旧直链，不重复上传 |
-| 命名规则 | `timestamp`（时间戳）/ `seq`（递增序号，可设位数）/ `keep`（保留原名）/ `hash`（内容哈希） |
-| 目录布局 | `note`（Obsidian 笔记同名目录）/ `date`（按年月）/ `vault`（按库）/ `flat`（平铺） |
-| 索引 | 记录路径、大小、sha1、上传时间，支持按路径/名称过滤、重新读取、刷新 |
-| 回收站 | 删除的文件可移入指定远程目录而不是直接删掉 |
-| 访问令牌 | 生成 `Bearer` 令牌，供 Obsidian 等外部客户端调用上传/扫描接口 |
+## HTTP API
 
-## 设置项
+The host's HTTP server listens on `127.0.0.1:<port>` (Settings → port, `5273` by default) and routes everything under `/plugin/imagehost` here.
 
-面板由 `config.json` 的 `plugin_setting.controls` 声明，本体据此渲染。分组与动作 key：
+| Route | Purpose |
+| --- | --- |
+| `GET /plugin/imagehost/ping` | probe: who answers here, what the limits are, which remote and directory are selected |
+| `POST /plugin/imagehost/upload` | upload one image, get `url` and `short_url` back |
+| `GET /plugin/imagehost/i/<remote>:<path>` | read an object back through the host — the fallback direct link points here |
 
-| 分组 | 控件 key | 类型 |
-|---|---|---|
-| 图床工具（上传 → 直链） | `remote` / `refresh-remotes` / `path` / `browse` / `subdir` / `upload` / `scan` / `lastlink` / `copy-link` / `state` | 下拉、文本、路径、动作、状态 |
-| 存储与命名 | `roots` / `save` / `naming` / `seqpad` / `dedupe` / `obsidian` / `trash` / `base` | 文本、下拉、数字、开关、路径、动作 |
-| 已索引 | `reload` / `refresh` / `filter` / `files` | 动作、文本、清单 |
-| 访问令牌 | `tokenlabel` / `add-token` | 文本、动作 |
-| 提示 | `tip` / `store-tip` / `token-tip` | 提示 |
+`ping` answers with:
 
-「存储的远程」的候选不是写死的：插件被调用时用 `rclone config/listremotes` 取列表，通过返回值的 `choices` 交给本体渲染；
-所以 `config.json` 里 `options` 只放一个占位项，真实选项运行时才有。「路径」右边的「浏览」列出该远程当前路径的子目录（含上一层）。
+```json
+{
+  "ok": true, "plugin": "imagehost", "version": "0.6.0", "port": 5273,
+  "upload_url": "http://127.0.0.1:5273/plugin/imagehost/upload",
+  "upload_path": "/plugin/imagehost/upload",
+  "accept": "POST multipart/form-data（字段名 file / image）或直接把图片字节当 body",
+  "max_mb": 20, "max_bytes": 20971520,
+  "compress": true, "short": false,
+  "remote": "local", "dir": "image_bed"
+}
+```
 
-`roots` 的写法是 `id=远程路径`，多个用逗号分隔，例如 `local=D:\pics, oss=oss:img/test`。
-第一个根是默认根 —— 上面「存储的远程 + 路径」这两栏编辑的就是它。
+`upload` answers with:
 
-直链的拼法是 `<公网地址>/i/<根 id>/<路径>`；`公网地址` 留空时用本体服务的 `origin`。
-`/i/<根 id>/<路径>` 是插件自己的图片路由（宿主用 `rclone.cat` 读字节），所以公网地址可以反代到本体上。
+```json
+{
+  "ok": true,
+  "url": "https://example.com/pics/image_bed/a.png",
+  "short_url": null,
+  "name": "a.png", "stored": "image_bed/a.png", "remote": "local",
+  "content_type": "image/png", "size": 81234, "original_size": 81234,
+  "compressed": false, "deduped": false
+}
+```
 
----
+- **Body.** Raw image bytes, `multipart/form-data` (a field named `file` or `image`) and JSON are all accepted. The file name comes from `?name=` first, then from the multipart part.
+- **Multipart is small.** The host caps a multipart field at about 2 MB, so a large image has to be posted as raw bytes — that is exactly what `image-upload-rcgui` does.
+- **Size cap.** Past `max_mb` the request is refused with 413, unless `超限先压缩` is on: then the plugin decodes, re-encodes to JPEG inside the sandbox and uploads that, reporting `compressed: true` plus a `note`.
+- **Dedupe.** With `去重` on and a same-named object already in the directory, the existing link is returned with `deduped: true`. With it off, the new object is stored as `名字 (1).png`.
+- **Short links never fail the upload.** When the template call goes wrong, `short_url` is `null` and `short_error` explains why; the direct link is still good.
+- **Proxied links need the host.** `/plugin/imagehost/i/...` reads the object from the remote on every request, so it only works while RCGUI runs — a site-type remote avoids that entirely.
 
-## 开发
+## Development
 
-需要 Rust 1.80+ 和 `wasm32-wasip1` 目标：
+Rust 1.80 or newer and the `wasm32-wasip1` target:
 
 ```powershell
 rustup target add wasm32-wasip1
-cargo build --release --target wasm32-wasip1   # 产物 target/wasm32-wasip1/release/main.wasm
+cargo build --release --target wasm32-wasip1
+pwsh -File scripts/pack.ps1
 ```
 
-打包（生成目录包 + `check.sha256` + zip，并打印 zip 的 sha256）：
-
-```powershell
-pwsh -File scripts/pack.ps1        # Windows
-bash scripts/pack.sh               # Linux / macOS / CI
-```
-
-### 目录结构
+On a bash shell use `bash scripts/pack.sh` instead; both scripts behave the same. Packaging builds the wasm, assembles `dist/<id>-<version>/` with `config.json`, `main.wasm` and `check.sha256`, zips it, and prints the SHA-256 of the archive. The build rewrites the cargo home prefix out of the binary so no local path ends up inside `main.wasm`.
 
 ```
-.
-├── Cargo.toml              # package imagehost-plugin, [[bin]] name = "main"
-├── config.json             # 插件清单 + 声明式面板（本体只读这个）
-├── src/
-│   ├── main.rs             # 入口：stdin 读一个 JSON，stdout 写一个 JSON
-│   └── ...
-├── scripts/
-│   ├── pack.ps1            # Windows 打包
-│   └── pack.sh             # CI / *nix 打包
-└── .github/workflows/
-    └── release.yml         # 打 tag → 构建 → 打包 → 发 Release
+config.json                     identity, capabilities, http_entry and the whole panel
+src/main.rs                     the plugin, in one file
+Cargo.toml                      wasm build settings and dependencies
+scripts/pack.ps1                build, assemble dist/<id>-<version>, print sha256
+scripts/pack.sh                 the same for bash and CI
+.github/workflows/release.yml   tag -> verify version -> build -> GitHub Release
 ```
 
-### 发版
+## Releasing
 
-1. 改 `config.json` 的 `version`（必须与 tag 一致，CI 会校验）；
-2. `git tag v0.4.0 && git push origin v0.4.0`；
-3. CI 构建、打包、建 Release，资产名 `imagehost-0.4.0.zip`；
-4. 把 Release 页面上打印的 sha256 填进本体的 `plugins/manifest.json`。
+1. Bump `version` in `config.json` and `Cargo.toml`; the workflow refuses a tag that disagrees with `config.json`.
+2. Tag and push: `git tag v0.7.0` then `git push origin v0.7.0`.
+3. CI builds and attaches `imagehost-0.7.0.zip` to the release, and prints its SHA-256.
+4. Copy that tag, asset name and SHA-256 into `plugins/manifest.json` in the host repository, so the next RCGUI build picks the new version up.
 
-> Release 由 CI 建，别在本地 `gh release create` —— 本地包与 CI 包的字节不同（编译器版本/路径差异），
-> 同时上传会互相覆盖，manifest 的 sha256 就对不上了。要发版只推 tag。
+Do not run `gh release create` by hand: the workflow creates the release and uploads the asset itself.
 
----
+## Plugin protocol
 
-## 面板动作（action 协议）
+- The host starts `main.wasm` as a WASI command and writes one JSON request per round to stdin.
+- A round answers either with a normal payload, or with `{"need":[{"cap":…,"params":…}]}` to ask the host for a capability call; the host replies and the round continues.
+- Declared capabilities: `kv`, `ui`, `fs`, `http`, `rclone`, `env`.
+- Panel state lives in the plugin's `kv` store — `on_start` runs `state`, `on_exit` runs `exit`.
+- An unknown action answers `未知动作：<name>` instead of aborting the round.
 
-面板上的按钮点下去，本体带着 `params.action`（控件 key）和 `params.form`（**所有值都是字符串**）重新调用插件：
+## Known limitations
 
-| action | 等价 HTTP 请求 | 结果（`result.body`） |
-|---|---|---|
-| `state` / `autostart` | `GET /config` + `GET /stats` | `status`（如「2 个存储根 · 128 张图片」）、`lamp`、`checks`、`hints`、`values`、`choices`（远程列表） |
-| `refresh-remotes` | 宿主能力 `rclone.remotes`（读本地 `rclone.conf`，不走 RC） | `choices.remote` + `status:"N 个远程"` |
-| `browse` | `rclone operations/list`（`form.remote:form.path`） | `choices.path`：上一层 + 当前路径下的子目录 |
-| `save` | `PUT /config`（由 `form` 拼 body） | `status:"已保存"`、`values` 回填规范化后的配置；校验失败 400 + `lamp:"err"` |
-| `reload` | `GET /config`，并重新读 `kv` | 同 `state`，但不受旧快照影响 |
-| `refresh` / `scan` | `POST /scan` | 扫描结果 `added`/`total` + 刷新后的状态 |
-| `upload` | `POST /upload`（`form.file` 经 `fs.read_b64` 合成 multipart） | 直链写进 `values.lastlink`，`toast` 提示上传成功 |
-| `add-token` | `POST /token`（`form.tokenlabel` → `name`） | `status:"已生成令牌：<令牌>"` |
-| `copy-link` | 无 HTTP 路由，直接 `ui.copy` | `status:"已复制"` |
-| `shutdown` / `exit` | 不请求任何宿主能力 | `status:"ok"` |
-| `http` | `params.http` 原样分发 | 与旧版一致，路由表不变 |
-| `detect-port` | 无 HTTP 路由，直接读本体的 `%APPDATA%\RCGUI\config.json` | `values.http_port`（本体当前的端口）+ `status`，用来把面板里的端口对齐到本体设置 |
+- A direct link is only public when the remote itself is public; a private remote gets the proxied link, which needs RCGUI running.
+- A proxied link spells out `<remote>:<path>`, so renaming or moving the object on the remote breaks links already shared.
+- `模板一` is the only short-link provider shape; anything else needs code.
+- Over-cap compression runs in the WASM sandbox on a single thread, so a very large image takes a while.
+- Panel labels are Chinese-only for now, as noted above.
 
-面板可写回本体的字段：`status`、`lamp`（`ok`/`warn`/`err`）、`checks`（`[{label,value,ok}]`）、
-`hints`（`{key:text}`）、`values`（回填进表单）、`enabled`、`progress`（负数 = 不确定进度）、
-`toast`（`{level,message}`），以及图片路由专用的 `content_type` / `body_b64`。多余字段宿主会忽略。
+## License
 
-新增的宿主能力调用：`fs.read_b64`（读待上传文件，上限 64 MiB）、`rclone.cat`（读图片字节，上限 32 MiB）、
-`ui.copy`（复制直链）。
-
----
-
-## HTTP 上传服务（给外部客户端用）
-
-除了面板上的按钮，本插件还接住本体转发来的、专门用于图床的 HTTP 请求。外部客户端（例如 Obsidian 插件
-`image-upload-rcgui`）把图片 POST 过来，拿回直链或短链。
-
-端口不归插件管：本体的「插件 HTTP 服务」端口（设置里那一项，默认 `5273`）决定入口；端口被占用时由本体提示
-「端口被占用」，插件面板里的「服务」分组只是显示/对齐它（「检测端口」按钮读取本体 `config.json` 里的 `http_port`）。
-
-| 路由 | 说明 |
-|---|---|
-| `GET /plugin/imagehost/ping` | 探活 + 读服务端配置：`{ok, plugin, version, port, max_mb, max_bytes, compress, short, remote, dir, upload_path, upload_url, accept}` |
-| `POST /plugin/imagehost/upload?name=<文件名>` | 上传一张图。body **直接放图片字节**（推荐），`Content-Type` 填图片 MIME；也接受 `multipart/form-data`（字段名 `file` 或 `image`） |
-| `GET /plugin/imagehost/i/...` | 直链代理（本体把该路径转给插件，插件用 `rclone.cat` 读字节） |
-
-成功响应（200）：
-
-```json
-{"ok":true,"url":"https://…/x.png","short_url":"http://i71i.com/l8zk","name":"x.png",
- "stored":"image_bed/x.png","remote":"k-vault","content_type":"image/png","size":8,
- "original_size":8,"compressed":false,"deduped":false}
-```
-
-* 超过「单张上限」（面板里的 `max_mb`，默认 20 MB）时，若 `compress` 开着，插件先在 WASM 里解码、必要时
-  重新编码成 JPG 压到上限内，再上传；`note` 字段会说明压了多少。压不动或 `compress` 关着则返回 413。
-* `short` 开着时会顺手取短链；短链服务失败不影响直链，失败原因在 `short_error`。
-* 同名文件默认不覆盖：命中已有索引会直接复用（`deduped:true`）；没有索引但远端已有同名文件时改名为 `name-1.png`。
-* multipart 走本体解析，**实测 2 MB 以上会被本体判成「multipart 里没有文件」**，所以大图请用原始字节 body。
-
----
-
-## 协议
-
-插件是一个 **WASI 命令行程序**：每次调用，本体把一段 JSON 写到 stdin，插件把一段 JSON 写到 stdout。
-需要宿主能力时，插件返回 `{"need":[{"cap":"...","params":{...}}]}`，本体执行后带着结果重新运行插件。
-完整协议、能力清单、面板 schema、命名规则、接入与分发规则见本体的
-**[docs/PLUGIN.md](https://github.com/h897105167/rclone_gui_windows/blob/main/docs/PLUGIN.md)**。
-
-本插件声明的能力：`kv`（索引与配置）、`fs`（读本地图片、路径选择）、`http`（下载远程图片做校验）、
-`rclone`（列目录、复制文件）、`ui`（提示与剪贴板）、`env`（数据目录）。
-
----
-
-## 已知限制
-
-* 直链依赖 rclone 远程本身可公开访问；插件只负责拼接 URL，不做反代。
-* `/i/<根 id>/<路径>` 需要本体把该路径转给插件（插件再用 `rclone.cat` 读字节）；本体若没接这条路由，
-  公网地址就得指向 rclone 远程自己的公开地址。
-* 索引存在插件私有 `kv` 里（`%APPDATA%\RCGUI\plugins\imagehost\kv.json`），卸载插件会一起删除。
-* 同一远程被多个 RCGUI 实例同时写入时，索引可能落后，需要手动「扫描索引」重建。
+MIT — see [LICENSE](LICENSE).
