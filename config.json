@@ -1,70 +1,92 @@
 {
   "id": "imagehost",
-  "name": "图床",
-  "version": "0.6.0",
+  "name": { "zh": "图床", "en": "Image host" },
+  "version": "0.6.1",
   "entry": "main.wasm",
-  "description": "基于 rclone 的图床：上传图片拿直链，可再换短链。",
+  "description": {
+    "zh": "基于 rclone 的图床：上传图片拿直链，可再换短链。",
+    "en": "An rclone-backed image host: upload an image, get a direct link, optionally shorten it."
+  },
   "author": "h897105167",
-  "tags": ["图床", "图片", "rclone", "上传", "短链"],
+  "tags": {
+    "zh": ["图床", "图片", "rclone", "上传", "短链"],
+    "en": ["image host", "image", "rclone", "upload", "short link"]
+  },
   "platform": "any",
   "builtin": false,
   "http_entry": true,
   "capabilities": ["kv", "ui", "fs", "http", "rclone", "env"],
   "plugin_setting": {
-    "version": 1,
-    "summary": "把本地图片传到 rclone 远程，生成直链；需要时再换一条短链。",
+    "version": 2,
+    "summary": {
+      "zh": "把本地图片传到 rclone 远程，生成直链；需要时再换一条短链。",
+      "en": "Upload a local image to an rclone remote and get a direct link; shorten it when you want."
+    },
     "on_start": "state",
     "on_exit": "exit",
     "controls": [
-      { "kind": "group", "key": "g-title", "label": "图床工具（上传 → 直链 → 短链）" },
+      {
+        "kind": "group",
+        "key": "g-title",
+        "label": {
+          "zh": "图床工具（上传 → 直链 → 短链）",
+          "en": "Image host (upload → direct link → short link)"
+        }
+      },
       {
         "kind": "field",
         "key": "remote",
-        "label": "存储的远程",
+        "label": { "zh": "存储的远程", "en": "Storage remote" },
         "field": "select",
         "dynamic": true,
         "width": 260,
         "line": "s1",
-        "placeholder": "选择一个 rclone 远程"
+        "placeholder": { "zh": "选择一个 rclone 远程", "en": "Pick an rclone remote" }
       },
       {
         "kind": "action",
         "key": "refresh-remotes",
-        "label": "刷新远程",
+        "label": { "zh": "刷新远程", "en": "Refresh remotes" },
         "style": "secondary",
         "line": "s1"
       },
       {
         "kind": "field",
         "key": "path",
-        "label": "上传目录",
+        "label": { "zh": "上传目录", "en": "Upload dir" },
         "field": "path",
         "width": 430,
         "line": "s2",
-        "placeholder": "留空 = 远程根，如 image_bed"
+        "placeholder": {
+          "zh": "留空 = 远程根，如 image_bed",
+          "en": "Empty = remote root, e.g. image_bed"
+        }
       },
       {
         "kind": "field",
         "key": "upload_path",
-        "label": "上传图片路径",
+        "label": { "zh": "上传图片路径", "en": "Image path" },
         "field": "text",
         "width": 330,
         "line": "s3",
-        "placeholder": "本机图片文件的完整路径"
+        "placeholder": {
+          "zh": "本机图片文件的完整路径",
+          "en": "Full path of a local image file"
+        }
       },
       {
         "kind": "action",
         "key": "pick",
-        "label": "选择文件…",
+        "label": { "zh": "选择文件…", "en": "Choose file…" },
         "style": "secondary",
         "line": "s3",
-        "dialog_title": "选择要上传的图片",
+        "dialog_title": { "zh": "选择要上传的图片", "en": "Choose the image to upload" },
         "filters": ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
       },
       {
         "kind": "field",
         "key": "dedupe",
-        "label": "去重",
+        "label": { "zh": "去重", "en": "Deduplicate" },
         "field": "bool",
         "default": "true",
         "line": "s4"
@@ -72,31 +94,41 @@
       {
         "kind": "hint",
         "key": "dedupe-tip",
-        "text": "去重：上传目录里已有同名文件就提示并取消上传（不勾选则自动改名成「名字 (1).png」）。"
+        "text": {
+          "zh": "去重：上传目录里已有同名文件就提示并取消上传（不勾选则自动改名成「名字 (1).png」）。",
+          "en": "Deduplicate: if the upload dir already holds a file with the same name, warn and cancel the upload (unticked, the new file is renamed to “name (1).png”)."
+        }
       },
       {
         "kind": "field",
         "key": "short_tpl",
-        "label": "短链模板",
+        "label": { "zh": "短链模板", "en": "Short-link template" },
         "field": "select",
-        "options": ["不选择", "模板一"],
+        "options": [
+          { "value": "不选择", "label": { "zh": "不选择", "en": "None" } },
+          { "value": "模板一", "label": { "zh": "模板一", "en": "Template 1" } }
+        ],
         "width": 140,
         "line": "s5"
       },
-      { "kind": "group", "key": "g-tpl1", "label": "模板一参数" },
+      {
+        "kind": "group",
+        "key": "g-tpl1",
+        "label": { "zh": "模板一参数", "en": "Template 1 settings" }
+      },
       {
         "kind": "field",
         "key": "short_fmt",
-        "label": "返回格式",
+        "label": { "zh": "返回格式", "en": "Response format" },
         "field": "select",
-        "options": ["无", "JSON", "JSONP"],
+        "options": [{ "value": "无", "label": { "zh": "无", "en": "None" } }, "JSON", "JSONP"],
         "width": 110,
         "line": "t1"
       },
       {
         "kind": "field",
         "key": "short_method",
-        "label": "请求方式",
+        "label": { "zh": "请求方式", "en": "Method" },
         "field": "select",
         "options": ["GET", "POST"],
         "width": 100,
@@ -105,7 +137,7 @@
       {
         "kind": "field",
         "key": "short_rate",
-        "label": "每秒上限",
+        "label": { "zh": "每秒上限", "en": "Per-second limit" },
         "field": "number",
         "width": 90,
         "line": "t1",
@@ -114,7 +146,7 @@
       {
         "kind": "field",
         "key": "short_callback",
-        "label": "JSONP 回调",
+        "label": { "zh": "JSONP 回调", "en": "JSONP callback" },
         "field": "text",
         "width": 120,
         "line": "t1",
@@ -123,7 +155,7 @@
       {
         "kind": "field",
         "key": "short_url",
-        "label": "请求地址",
+        "label": { "zh": "请求地址", "en": "Endpoint" },
         "field": "text",
         "width": 260,
         "line": "t2",
@@ -136,22 +168,31 @@
         "field": "password",
         "width": 300,
         "line": "t2",
-        "placeholder": "模板一必须填 api_key"
+        "placeholder": {
+          "zh": "模板一必须填 api_key",
+          "en": "Template 1 requires an api_key"
+        }
       },
       {
         "kind": "hint",
         "key": "short-tip",
-        "text": "模板一：请求地址 + url + apikey；返回格式「无」表示服务端直接回纯文本链接。填好后点「保存设置」记住。"
+        "text": {
+          "zh": "模板一：请求地址 + url + apikey；返回格式「无」表示服务端直接回纯文本链接。填好后点「保存设置」记住。",
+          "en": "Template 1: endpoint + url + apikey; the “None” response format means the service returns a plain-text link. Click “Save settings” to keep it."
+        }
       },
       {
         "kind": "group",
         "key": "g-http",
-        "label": "HTTP 上传服务（给外部客户端）"
+        "label": {
+          "zh": "HTTP 上传服务（给外部客户端）",
+          "en": "HTTP upload service (for external clients)"
+        }
       },
       {
         "kind": "field",
         "key": "max_mb",
-        "label": "体积上限 MB",
+        "label": { "zh": "体积上限 MB", "en": "Size limit MB" },
         "field": "number",
         "width": 90,
         "line": "h1",
@@ -160,7 +201,7 @@
       {
         "kind": "field",
         "key": "compress",
-        "label": "超限先压缩",
+        "label": { "zh": "超限先压缩", "en": "Compress oversized first" },
         "field": "bool",
         "default": "true",
         "line": "h1"
@@ -168,63 +209,87 @@
       {
         "kind": "action",
         "key": "detect-port",
-        "label": "检测服务",
+        "label": { "zh": "检测服务", "en": "Detect service" },
         "style": "secondary",
         "line": "h1"
       },
       {
         "kind": "field",
         "key": "http_url",
-        "label": "上传地址",
+        "label": { "zh": "上传地址", "en": "Upload URL" },
         "field": "text",
         "width": 430,
         "line": "h2",
-        "placeholder": "点「检测服务」自动填写"
+        "placeholder": {
+          "zh": "点「检测服务」自动填写",
+          "en": "Filled in by “Detect service”"
+        }
       },
       {
         "kind": "hint",
         "key": "http-tip",
-        "text": "端口在「设置」页里配置（默认 5273，被占用会提示），勾上「随程序启动」后每次启动都会拉起这个上传服务。外部客户端探测 http://127.0.0.1:<端口>/plugin/imagehost/ping，上传走 POST /plugin/imagehost/upload。超过体积上限的图会先压缩再传；选了短链模板就返回短链，取不到时自动回退直链。"
+        "text": {
+          "zh": "端口在「设置」页里配置（默认 5273，被占用会提示），勾上「随程序启动」后每次启动都会拉起这个上传服务。外部客户端探测 http://127.0.0.1:<端口>/plugin/imagehost/ping，上传走 POST /plugin/imagehost/upload。超过体积上限的图会先压缩再传；选了短链模板就返回短链，取不到时自动回退直链。",
+          "en": "The port lives on the Settings page (default 5273, a busy port is reported). With “start with the app” ticked this upload service starts on every launch. External clients probe http://127.0.0.1:<port>/plugin/imagehost/ping and upload via POST /plugin/imagehost/upload. Images over the size limit are compressed first; if a short-link template is chosen the short link is returned, with a fallback to the direct link."
+        }
       },
       {
         "kind": "action",
         "key": "run",
-        "label": "生成直链",
+        "label": { "zh": "生成直链", "en": "Generate direct link" },
         "style": "primary",
         "line": "b1"
       },
-      { "kind": "action", "key": "save", "label": "保存设置", "style": "secondary", "line": "b1" },
-      { "kind": "action", "key": "copy-link", "label": "复制直链", "style": "secondary", "line": "b1" },
+      {
+        "kind": "action",
+        "key": "save",
+        "label": { "zh": "保存设置", "en": "Save settings" },
+        "style": "secondary",
+        "line": "b1"
+      },
+      {
+        "kind": "action",
+        "key": "copy-link",
+        "label": { "zh": "复制直链", "en": "Copy direct link" },
+        "style": "secondary",
+        "line": "b1"
+      },
       {
         "kind": "field",
         "key": "last_link",
-        "label": "直链",
+        "label": { "zh": "直链", "en": "Direct link" },
         "field": "text",
         "width": 430,
         "line": "r1",
-        "placeholder": "上传后在这里显示"
+        "placeholder": { "zh": "上传后在这里显示", "en": "Shown here after upload" }
       },
       {
         "kind": "action",
         "key": "copy-short",
-        "label": "复制短链",
+        "label": { "zh": "复制短链", "en": "Copy short link" },
         "style": "secondary",
         "line": "r2"
       },
       {
         "kind": "field",
         "key": "last_short",
-        "label": "短链",
+        "label": { "zh": "短链", "en": "Short link" },
         "field": "text",
         "width": 430,
         "line": "r2",
-        "placeholder": "选「模板一」并上传后会在这里显示"
+        "placeholder": {
+          "zh": "选「模板一」并上传后会在这里显示",
+          "en": "Shown here after choosing “Template 1” and uploading"
+        }
       },
-      { "kind": "status", "key": "state", "text": "状态", "lamp": true },
+      { "kind": "status", "key": "state", "text": { "zh": "状态", "en": "Status" }, "lamp": true },
       {
         "kind": "hint",
         "key": "link-tip",
-        "text": "直链来源：K-Vault 等站点型远程由 rclone 上传后直接给出站点链接；普通远程退回本机服务的代理链接 http://127.0.0.1:<port>/plugin/imagehost/i/<远程>:<路径>，需要本程序在运行。"
+        "text": {
+          "zh": "直链来源：K-Vault 等站点型远程由 rclone 上传后直接给出站点链接；普通远程退回本机服务的代理链接 http://127.0.0.1:<port>/plugin/imagehost/i/<远程>:<路径>，需要本程序在运行。",
+          "en": "Where the direct link comes from: for site-style remotes (K-Vault etc.) rclone returns the site link right after upload; for plain remotes it falls back to this app's proxy link http://127.0.0.1:<port>/plugin/imagehost/i/<remote>:<path>, which needs the app running."
+        }
       }
     ]
   }

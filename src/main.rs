@@ -1,4 +1,4 @@
-//! imagehost 插件 v0.6.0：图床（上传 → 直链 → 短链）+ HTTP 上传服务
+//! imagehost 插件 v0.6.1：图床（上传 → 直链 → 短链）+ HTTP 上传服务
 //!
 //! 这是 rclone GUI 0.2.0 里那块「图床工具（上传 → 直链 → 短链）」原生面板的
 //! 独立插件版：界面完全由 `config.json` 的 `plugin_setting.controls` 声明，
@@ -10,6 +10,8 @@
 //! 关键点：要拿直链，上传必须用 **need** 调 `rclone.upload_file`
 //! （`ops` 里的同一个名字是即发即忘的，返回值会被丢掉）；K-Vault 型远端回
 //! `{link,name,deduped}`，普通远端回 `{}`，那时退回本机服务的代理直链。
+
+mod i18n;
 
 use std::io::{Read, Write};
 
@@ -49,6 +51,13 @@ fn main() {
 }
 
 fn dispatch(input: &Value) -> Value {
+    // 宿主每轮都把界面语言放在 params.lang（`zh` / `en`）：插件自带译文，
+    // 缺对应语言时 i18n 模块回落英文。老宿主不带这个字段，按中文处理。
+    let lang = input
+        .get("params")
+        .and_then(|p| p.get("lang"))
+        .and_then(|v| v.as_str());
+    i18n::set_lang(lang);
     let id = input.get("id").cloned().unwrap_or(json!(0));
     let method = s(input.get("method"));
     if method == "manifest" {
@@ -56,9 +65,9 @@ fn dispatch(input: &Value) -> Value {
             "id": id,
             "manifest": {
                 "id": PLUGIN_ID,
-                "name": "图床",
+                "name": i18n::t("图床"),
                 "version": env!("CARGO_PKG_VERSION"),
-                "description": "基于 rclone 的图床：上传图片拿直链，可再换短链。",
+                "description": i18n::t("基于 rclone 的图床：上传图片拿直链，可再换短链。"),
             }
         });
     }
@@ -359,7 +368,7 @@ fn handle_request(id: Value, params: &Value) -> Value {
         return json!({
             "id": id,
             "ops": [],
-            "result": { "status": 200, "body": { "status": "已关闭", "lamp": "ok" } }
+            "result": { "status": 200, "body": { "status": i18n::t("已关闭"), "lamp": "ok" } }
         });
     }
 
@@ -408,13 +417,13 @@ fn handle_request(id: Value, params: &Value) -> Value {
             let cur = cfg.path.clone();
             remember_path(&mut cfg, &cur);
             let ops = vec![save_op(&cfg)];
-            panel(&id, ops, &cfg, "设置已保存", "ok", None)
+            panel(&id, ops, &cfg, &i18n::t("设置已保存"), "ok", None)
         }
         "copy-link" => act_copy(id, cfg, false),
         "copy-short" => act_copy(id, cfg, true),
         "detect-port" => act_detect_port(id, &action, step, &form, cfg, &provided),
         "run" | "upload" => act_run(id, &action, step, &form, cfg, &provided, &work),
-        other => err_panel(&id, &cfg, &format!("未知动作：{other}")),
+        other => err_panel(&id, &cfg, &i18n::f("未知动作：{other}", &[&other])),
     }
 }
 
@@ -457,11 +466,11 @@ fn act_remotes(
         }
     }
     let status = if list.len() > 1 {
-        format!("共 {} 个远程", list.len())
+        i18n::f("共 {} 个远程", &[&list.len()])
     } else if list.is_empty() {
-        "没读到任何远程：先在 rclone 配置里加一个".to_string()
+        i18n::t("没读到任何远程：先在 rclone 配置里加一个").to_string()
     } else {
-        format!("当前远程：{}", list[0])
+        i18n::f("当前远程：{}", &[&list[0]])
     };
     let mut ops = Vec::new();
     if migrated {
@@ -508,7 +517,7 @@ fn act_browse(
     work: &Map<String, Value>,
 ) -> Value {
     if cfg.remote.trim().is_empty() {
-        return err_panel(&id, &cfg, "先选择要浏览的远程");
+        return err_panel(&id, &cfg, &i18n::t("先选择要浏览的远程"));
     }
     let cur = norm_dir(&cfg.path);
     if step == 0 {
@@ -552,9 +561,9 @@ fn act_browse(
         }
     }
     let status = if dirs.is_empty() {
-        format!("「{}」下没有子目录", if cur.is_empty() { "/" } else { cur.as_str() })
+        i18n::f("「{}」下没有子目录", &[&if cur.is_empty() { "/" } else { cur.as_str() }])
     } else {
-        format!("「{}」下有 {} 个子目录", if cur.is_empty() { "/" } else { cur.as_str() }, dirs.len())
+        i18n::f("「{}」下有 {} 个子目录", &[&if cur.is_empty() { "/" } else { cur.as_str() }, &dirs.len()])
     };
     let choices = json!({ "path": list });
     panel(&id, Vec::new(), &cfg, &status, "ok", Some(choices))
@@ -574,7 +583,7 @@ fn act_pick(
             "fs.pick_file",
             "pick",
             json!({
-                "title": "选择要上传的图片",
+                "title": i18n::t("选择要上传的图片"),
                 "filters": ["png", "jpg", "jpeg", "gif", "webp", "bmp"],
             }),
         )];
@@ -583,11 +592,11 @@ fn act_pick(
     let picked = provided.get("pick").cloned().unwrap_or(Value::Null);
     let path = s(picked.get("path"));
     if path.is_empty() {
-        return panel(&id, Vec::new(), &cfg, "没有选择文件", "warn", None);
+        return panel(&id, Vec::new(), &cfg, &i18n::t("没有选择文件"), "warn", None);
     }
     cfg.upload_path = path;
     let ops = vec![save_op(&cfg)];
-    let status = format!("已选择：{}", cfg.upload_path);
+    let status = i18n::f("已选择：{}", &[&cfg.upload_path]);
     panel(&id, ops, &cfg, &status, "ok", None)
 }
 
@@ -598,12 +607,12 @@ fn act_copy(id: Value, cfg: Cfg, short: bool) -> Value {
         cfg.last_link.trim().to_string()
     };
     if text.is_empty() {
-        let msg = if short { "还没有短链" } else { "还没有直链" };
-        return panel(&id, Vec::new(), &cfg, msg, "warn", None);
+        let msg = if short { i18n::t("还没有短链") } else { i18n::t("还没有直链") };
+        return panel(&id, Vec::new(), &cfg, &msg, "warn", None);
     }
     let ops = vec![json!({ "op": "ui.copy", "text": text })];
-    let msg = if short { "已复制短链" } else { "已复制直链" };
-    panel(&id, ops, &cfg, msg, "ok", None)
+    let msg = if short { i18n::t("已复制短链") } else { i18n::t("已复制直链") };
+    panel(&id, ops, &cfg, &msg, "ok", None)
 }
 
 // ---------------------------------------------------------------- 生成直链
@@ -621,10 +630,10 @@ fn act_run(
     match step {
         0 => {
             if cfg.upload_path.trim().is_empty() {
-                return err_panel(&id, &cfg, "先在「上传图片路径」里选一张本机图片");
+                return err_panel(&id, &cfg, &i18n::t("先在「上传图片路径」里选一张本机图片"));
             }
             if cfg.remote.trim().is_empty() {
-                return err_panel(&id, &cfg, "先选择要上传到的远程");
+                return err_panel(&id, &cfg, &i18n::t("先选择要上传到的远程"));
             }
             let needs = vec![
                 need(
@@ -647,15 +656,15 @@ fn act_run(
         1 => {
             let file = provided.get("file").cloned().unwrap_or(Value::Null);
             if let Some(e) = cap_err(&file) {
-                return err_panel(&id, &cfg, &format!("读取图片失败：{e}"));
+                return err_panel(&id, &cfg, &i18n::f("读取图片失败：{e}", &[&e]));
             }
             let mut data_b64 = s(file.get("data_b64"));
             if data_b64.is_empty() {
-                return err_panel(&id, &cfg, "读到的图片是空的");
+                return err_panel(&id, &cfg, &i18n::t("读到的图片是空的"));
             }
             let mut base_name = file_name(&cfg.upload_path);
             if base_name.is_empty() {
-                return err_panel(&id, &cfg, "看不出文件名，检查「上传图片路径」");
+                return err_panel(&id, &cfg, &i18n::t("看不出文件名，检查「上传图片路径」"));
             }
             // 超过上限就压一压：和 HTTP 上传走同一套逻辑。
             let mut shrunk = String::new();
@@ -691,7 +700,7 @@ fn act_run(
                     return err_panel(
                         &id,
                         &cfg,
-                        &format!("「{shown}」已经存在这份文件，按「去重」取消上传（要留两份就取消勾选「去重」）"),
+                        &i18n::f("「{shown}」已经存在这份文件，按「去重」取消上传（要留两份就取消勾选「去重」）", &[&shown]),
                     );
                 }
                 final_name = resolve_conflict(&existing, &stem, &ext);
@@ -719,7 +728,7 @@ fn act_run(
         2 => {
             let up = provided.get("up").cloned().unwrap_or(Value::Null);
             if let Some(e) = cap_err(&up) {
-                return err_panel(&id, &cfg, &format!("上传失败：{e}"));
+                return err_panel(&id, &cfg, &i18n::f("上传失败：{e}", &[&e]));
             }
             let name = s(work.get("name"));
             let stored = join_dir(&dir, &name);
@@ -769,7 +778,7 @@ fn act_run(
             let source = s(work.get("source"));
             finish_short(&id, cfg, provided, work, Some(source))
         }
-        _ => err_panel(&id, &cfg, "状态丢了，重新点一次「生成直链」"),
+        _ => err_panel(&id, &cfg, &i18n::t("状态丢了，重新点一次「生成直链」")),
     }
 }
 
@@ -809,7 +818,7 @@ fn after_link(
         return err_panel(
             id,
             cfg,
-            "文件传上去了，但拿不到直链：该远程不支持公开链接，也没取到本机服务端口",
+            &i18n::t("文件传上去了，但拿不到直链：该远程不支持公开链接，也没取到本机服务端口"),
         );
     }
 
@@ -868,29 +877,30 @@ fn finish_upload(id: &Value, mut cfg: Cfg, work: &Map<String, Value>, source: Op
         ops.push(json!({
             "op": "ui.toast",
             "level": "info",
-            "message": if short_err.is_empty() { "图片已上传，直链已生成" } else { "图片已上传，短链没换成" },
+            "message": if short_err.is_empty() { i18n::t("图片已上传，直链已生成") } else { i18n::t("图片已上传，短链没换成") },
         }));
     } else {
-        ops.push(json!({ "op": "ui.toast", "level": "info", "message": "图片已上传，直链与短链都已生成" }));
+        ops.push(json!({ "op": "ui.toast", "level": "info", "message": i18n::t("图片已上传，直链与短链都已生成") }));
     }
 
-    let mut status = format!("已上传：{stored}");
+    let mut status = i18n::f("已上传：{stored}", &[&stored]);
     if let Some(src) = source.filter(|s| !s.is_empty()) {
-        status.push_str(&format!("（直链来源：{src}）"));
+        // `src` 是落盘值（站点 / 本机代理），显示时才翻
+        status.push_str(&i18n::f("（直链来源：{src}）", &[&i18n::t(&src)]));
     }
     if let Some(note) = work.get("shrunk").map(vstr).filter(|n| !n.is_empty()) {
-        status.push_str(&format!("；{note}"));
+        status.push_str(&i18n::f("；{note}", &[&note]));
     }
     if deduped {
-        status.push_str("；站点已有同一份内容，直接复用了旧文件");
+        status.push_str(&i18n::t("；站点已有同一份内容，直接复用了旧文件"));
     }
     if !short.is_empty() {
-        status.push_str(&format!("；短链：{short}"));
+        status.push_str(&i18n::f("；短链：{short}", &[&short]));
     } else if cfg.short_tpl == 1 {
         if short_err.is_empty() {
-            status.push_str("；短链模板没换成功，直链可用");
+            status.push_str(&i18n::t("；短链模板没换成功，直链可用"));
         } else {
-            status.push_str(&format!("；短链失败：{short_err}"));
+            status.push_str(&i18n::f("；短链失败：{short_err}", &[&short_err]));
         }
     }
     let lamp = if short.is_empty() && cfg.short_tpl == 1 && !short_err.is_empty() {
@@ -921,7 +931,7 @@ fn finish_short(
         let brief = first_line(&body);
         work.insert(
             "short_err".to_string(),
-            json!(format!("短链服务返回 HTTP {code}：{brief}")),
+            json!(i18n::f("短链服务返回 HTTP {code}：{brief}", &[&code, &brief])),
         );
         return finish_upload(id, cfg, &work, source);
     }
@@ -946,14 +956,14 @@ fn short_request(
 ) -> Result<(String, String, Option<String>, Map<String, Value>), String> {
     let base = cfg.short_url.trim();
     if base.is_empty() {
-        return Err("未填写短链请求地址".to_string());
+        return Err(i18n::t("未填写短链请求地址").to_string());
     }
     if !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err("短链请求地址必须以 http:// 或 https:// 开头".to_string());
     }
     let key = cfg.short_key.trim();
     if key.is_empty() {
-        return Err("短链模板一必须填写 api_key".to_string());
+        return Err(i18n::t("短链模板一必须填写 api_key").to_string());
     }
     let mut pairs: Vec<(String, String)> = Vec::new();
     pairs.push(("url".to_string(), direct.to_string()));
@@ -1009,7 +1019,7 @@ fn form_encode(text: &str) -> String {
 fn parse_short(fmt: u32, body: &str) -> Result<String, String> {
     let text = body.trim();
     if text.is_empty() {
-        return Err("短链服务回了空响应".to_string());
+        return Err(i18n::t("短链服务回了空响应").to_string());
     }
     match fmt {
         1 => parse_json_short(text),
@@ -1024,7 +1034,7 @@ fn parse_short(fmt: u32, body: &str) -> Result<String, String> {
         _ => {
             let line = first_line(text);
             if line.is_empty() {
-                Err("短链服务没给出链接".to_string())
+                Err(i18n::t("短链服务没给出链接").to_string())
             } else {
                 Ok(line)
             }
@@ -1033,7 +1043,7 @@ fn parse_short(fmt: u32, body: &str) -> Result<String, String> {
 }
 
 fn parse_json_short(text: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(text).map_err(|e| format!("短链服务回的不是 JSON：{e}"))?;
+    let v: Value = serde_json::from_str(text).map_err(|e| i18n::f("短链服务回的不是 JSON：{e}", &[&e]))?;
     let v = unwrap_result(&v);
     if let Some(s) = v.as_str() {
         return Ok(s.to_string());
@@ -1046,7 +1056,7 @@ fn parse_json_short(text: &str) -> Result<String, String> {
             }
         }
     }
-    Err(format!("短链服务返回里没有链接：{}", first_line(text)))
+    Err(i18n::f("短链服务返回里没有链接：{}", &[&first_line(text)]))
 }
 
 fn first_line(text: &str) -> String {
@@ -1130,7 +1140,7 @@ fn serve_upload_info(id: &Value, cfg: Cfg, port: u16) -> Value {
             "port": port,
             "upload_url": if origin.is_empty() { String::new() } else { format!("{origin}{path}") },
             "upload_path": path,
-            "accept": "POST multipart/form-data（字段名 file / image）或直接把图片字节当 body",
+            "accept": i18n::t("POST multipart/form-data（字段名 file / image）或直接把图片字节当 body"),
             "max_mb": cfg.max_mb,
             "max_bytes": limit_of(&cfg) as u64,
             "compress": cfg.compress,
@@ -1176,7 +1186,7 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
                     503,
                     json!({
                         "ok": false,
-                        "error": "插件还没选存储远程：先在 RCGUI 的「图床」面板里选一个远程并保存",
+                        "error": i18n::t("插件还没选存储远程：先在 RCGUI 的「图床」面板里选一个远程并保存"),
                     }),
                 );
             }
@@ -1185,7 +1195,7 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
                 Err((code, msg)) => return http_json(&id, code, json!({ "ok": false, "error": msg })),
             };
             if bytes.is_empty() {
-                return http_json(&id, 400, json!({ "ok": false, "error": "收到的图片是空的" }));
+                return http_json(&id, 400, json!({ "ok": false, "error": i18n::t("收到的图片是空的") }));
             }
             if bytes.len() > limit_of(&cfg) && !cfg.compress {
                 return http_json(
@@ -1193,10 +1203,10 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
                     413,
                     json!({
                         "ok": false,
-                        "error": format!(
-                            "图片 {:.1} MB 超过 {} MB 上限，而且「超限压缩」是关的",
-                            mb(bytes.len()),
-                            cfg.max_mb
+                        // `i18n::f` 只认 `{}`：浮点自己先格式化成一位小数
+                        "error": i18n::f(
+                            "图片 {} MB 超过 {} MB 上限，而且「超限压缩」是关的",
+                            &[&mb1(bytes.len()), &cfg.max_mb]
                         ),
                         "max_bytes": limit_of(&cfg) as u64,
                     }),
@@ -1300,7 +1310,7 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
         3 => {
             let up = provided.get("up").cloned().unwrap_or(Value::Null);
             if let Some(e) = cap_err(&up) {
-                return http_json(&id, 502, json!({ "ok": false, "error": format!("上传失败：{e}") }));
+                return http_json(&id, 502, json!({ "ok": false, "error": i18n::f("上传失败：{e}", &[&e]) }));
             }
             let dir = norm_dir(&cfg.path);
             let name = s(work.get("name"));
@@ -1324,7 +1334,7 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
                     502,
                     json!({
                         "ok": false,
-                        "error": "文件传上去了，但拿不到直链：该远程不支持公开链接，也没取到本机服务端口",
+                        "error": i18n::t("文件传上去了，但拿不到直链：该远程不支持公开链接，也没取到本机服务端口"),
                         "stored": stored,
                     }),
                 );
@@ -1343,7 +1353,7 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
                 if code != 0 && !(200..300).contains(&code) {
                     work.insert(
                         "short_err".to_string(),
-                        json!(format!("短链服务返回 HTTP {code}：{}", first_line(&body))),
+                        json!(i18n::f("短链服务返回 HTTP {code}：{}", &[&code, &first_line(&body)])),
                     );
                 } else {
                     match parse_short(cfg.short_fmt, &body) {
@@ -1486,12 +1496,12 @@ fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
         if saw_file {
             return Err((
                 413,
-                "文件字段是空的：RCGUI 宿主对 multipart 的单个字段有大小上限，大图请改用裸字节 POST（图片字节直接当 body，文件名放 ?name=）".to_string(),
+                i18n::t("文件字段是空的：RCGUI 宿主对 multipart 的单个字段有大小上限，大图请改用裸字节 POST（图片字节直接当 body，文件名放 ?name=）").to_string(),
             ));
         }
         return Err((
             400,
-            "multipart 里没有文件：字段名用 file / image 都认，也可以把图片字节直接当 body".to_string(),
+            i18n::t("multipart 里没有文件：字段名用 file / image 都认，也可以把图片字节直接当 body").to_string(),
         ));
     }
 
@@ -1499,7 +1509,7 @@ fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
     if raw.is_empty() {
         return Err((
             400,
-            "请求体是空的：把图片放在 multipart 的 file 字段，或直接发图片字节".to_string(),
+            i18n::t("请求体是空的：把图片放在 multipart 的 file 字段，或直接发图片字节").to_string(),
         ));
     }
     let bytes = decode_b64(&raw)?;
@@ -1521,10 +1531,10 @@ fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
                 return Ok((upload_name(&given, &ctype), bytes));
             }
             if ctype.contains("json") {
-                return Err((400, "JSON 里没有 data_b64 / data / base64 字段".to_string()));
+                return Err((400, i18n::t("JSON 里没有 data_b64 / data / base64 字段").to_string()));
             }
         } else if ctype.contains("json") {
-            return Err((400, "JSON 解析失败".to_string()));
+            return Err((400, i18n::t("JSON 解析失败").to_string()));
         }
     }
 
@@ -1604,9 +1614,9 @@ fn shrink_bytes(
         return Ok(None);
     }
     let fmt = image::guess_format(bytes)
-        .map_err(|_| "认不出图片格式（支持 png / jpg / webp），没法压缩".to_string())?;
+        .map_err(|_| i18n::t("认不出图片格式（支持 png / jpg / webp），没法压缩").to_string())?;
     let img = image::load_from_memory_with_format(bytes, fmt)
-        .map_err(|e| format!("图片解码失败：{e}"))?;
+        .map_err(|e| i18n::f("图片解码失败：{e}", &[&e]))?;
     let alpha = img.color().has_alpha();
     let (w0, h0) = (img.width().max(1), img.height().max(1));
     let mut scale = 1.0f32;
@@ -1618,14 +1628,16 @@ fn shrink_bytes(
         let (out, ext) = encode_image(&img, w, h, alpha, round)?;
         last = out.len();
         if out.len() <= limit {
-            let note = format!(
-                "原图 {:.1} MB 超过 {} MB，已压成 {}×{} 的 {}（{:.1} MB）",
-                mb(bytes.len()),
-                cfg.max_mb,
-                w,
-                h,
-                ext.to_uppercase(),
-                mb(out.len())
+            let note = i18n::f(
+                "原图 {} MB 超过 {} MB，已压成 {}×{} 的 {}（{} MB）",
+                &[
+                    &mb1(bytes.len()),
+                    &cfg.max_mb,
+                    &w,
+                    &h,
+                    &ext.to_uppercase(),
+                    &mb1(out.len()),
+                ],
             );
             return Ok(Some((out, renamed(name, ext), note)));
         }
@@ -1634,11 +1646,9 @@ fn shrink_bytes(
         }
         scale *= 0.82;
     }
-    Err(format!(
-        "压到 {}px 还是降不到 {} MB（现在 {:.1} MB）",
-        MIN_SIDE,
-        cfg.max_mb,
-        mb(last)
+    Err(i18n::f(
+        "压到 {}px 还是降不到 {} MB（现在 {} MB）",
+        &[&MIN_SIDE, &cfg.max_mb, &mb1(last)],
     ))
 }
 
@@ -1661,7 +1671,7 @@ fn encode_image(
         let rgba = scaled.to_rgba8();
         image::codecs::png::PngEncoder::new(&mut out)
             .write_image(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
-            .map_err(|e| format!("PNG 编码失败：{e}"))?;
+            .map_err(|e| i18n::f("PNG 编码失败：{e}", &[&e]))?;
         Ok((out, "png"))
     } else {
         // 每轮顺手再降一点质量，尺寸兜底时才不至于只能压到 64px。
@@ -1669,7 +1679,7 @@ fn encode_image(
         let rgb = scaled.to_rgb8();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
             .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
-            .map_err(|e| format!("JPEG 编码失败：{e}"))?;
+            .map_err(|e| i18n::f("JPEG 编码失败：{e}", &[&e]))?;
         Ok((out, "jpg"))
     }
 }
@@ -1692,6 +1702,11 @@ fn limit_of(cfg: &Cfg) -> usize {
 
 fn mb(n: usize) -> f64 {
     (n as f64) / (1024.0 * 1024.0)
+}
+
+/// 兆字节的展示形式（固定一位小数）：`i18n::f` 只认 `{}`，浮点得先自己格式化。
+fn mb1(n: usize) -> String {
+    format!("{:.1}", mb(n))
 }
 
 /// 本机服务的根地址；端口没探到就空串（调用方自己兜）。
@@ -1762,7 +1777,7 @@ fn decode_b64(text: &str) -> Result<Vec<u8>, (u16, String)> {
     }
     base64::engine::general_purpose::STANDARD_NO_PAD
         .decode(cleaned.as_bytes())
-        .map_err(|_| (400, "data_b64 不是有效的 base64".to_string()))
+        .map_err(|_| (400, i18n::t("data_b64 不是有效的 base64").to_string()))
 }
 
 /// 面板上的「探测端口」：读宿主 config.json 的 http.port，把上传地址写回面板。
@@ -1787,7 +1802,7 @@ fn act_detect_port(
         1 => {
             let data_dir = data_dir_of(provided);
             if data_dir.is_empty() {
-                return err_panel(&id, &cfg, "取不到 RCGUI 的数据目录：重启一下 RCGUI 再点「探测端口」");
+                return err_panel(&id, &cfg, &i18n::t("取不到 RCGUI 的数据目录：重启一下 RCGUI 再点「探测端口」"));
             }
             next(
                 &id,
@@ -1808,7 +1823,7 @@ fn act_detect_port(
                     &id,
                     vec![save_op(&cfg)],
                     &cfg,
-                    "没读到宿主端口：先确认 RCGUI 设置里的「HTTP 服务」是开着的",
+                    &i18n::t("没读到宿主端口：先确认 RCGUI 设置里的「HTTP 服务」是开着的"),
                     "warn",
                     None,
                 );
@@ -1818,16 +1833,11 @@ fn act_detect_port(
                 "{}/plugin/{PLUGIN_ID}/{UPLOAD_ROUTE}",
                 origin_of(port)
             );
-            let status = format!(
-                "上传地址：{}（上限 {} MB，{}）",
-                cfg.http_url,
-                cfg.max_mb,
-                if cfg.compress {
-                    "超限自动压缩"
+            let status = i18n::f("上传地址：{}（上限 {} MB，{}）", &[&cfg.http_url, &cfg.max_mb, &if cfg.compress {
+                    i18n::t("超限自动压缩")
                 } else {
-                    "超限直接报错"
-                }
-            );
+                    i18n::t("超限直接报错")
+                }]);
             panel(&id, vec![save_op(&cfg)], &cfg, &status, "ok", None)
         }
     }
@@ -1841,14 +1851,14 @@ fn serve_image(id: Value, params: &Value, http: &Value) -> Value {
     let rest = path.trim_start_matches('/');
     let rest = match rest.strip_prefix(ROUTE_PREFIX.trim_start_matches('/')) {
         Some(x) => x,
-        None => return http_not_found(&id, "不是图片路径"),
+        None => return http_not_found(&id, &i18n::t("不是图片路径")),
     };
     let (remote, stored) = match rest.split_once(':') {
         Some((r, p)) => (r.to_string(), p.trim_start_matches('/').to_string()),
-        None => return http_not_found(&id, "路径缺少「远程:文件」"),
+        None => return http_not_found(&id, &i18n::t("路径缺少「远程:文件」")),
     };
     if remote.is_empty() || stored.is_empty() || stored.contains("..") {
-        return http_not_found(&id, "路径不合法");
+        return http_not_found(&id, &i18n::t("路径不合法"));
     }
 
     let prev = params.get("state").cloned().unwrap_or(Value::Null);
@@ -1871,7 +1881,7 @@ fn serve_image(id: Value, params: &Value, http: &Value) -> Value {
     }
     let b64 = s(img.get("data_b64"));
     if b64.is_empty() {
-        return http_not_found(&id, "文件是空的");
+        return http_not_found(&id, &i18n::t("文件是空的"));
     }
     let ct = {
         let given = s(img.get("content_type"));

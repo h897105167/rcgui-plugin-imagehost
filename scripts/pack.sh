@@ -7,6 +7,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Windows 上 python3 可能是应用商店占位符（能启动但退出码 49，什么都不做），
+# 所以先探测真正能执行的解释器再使用；Git Bash / CI 上 python3 正常。
+PY=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import sys' >/dev/null 2>&1; then
+    PY="$cand"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "找不到可用的 python 解释器" >&2
+  exit 1
+fi
+
 # Keep the build machine's cargo home out of the published artifact: dependency
 # panic locations embed absolute paths, which would leak the user name and the
 # local directory layout into main.wasm.
@@ -53,14 +67,16 @@ cp "$wasm" "$out/$cfg_entry"
 
 zip="dist/$cfg_id-$cfg_version.zip"
 rm -f "$zip"
-if command -v zip >/dev/null 2>&1; then
-  ( cd "$out" && zip -q -r "../$cfg_id-$cfg_version.zip" . )
-else
-  # Windows 的 Git Bash 常常没有 zip：退回 PowerShell 打包
-  echo "没有 zip 命令，改用 PowerShell 的 Compress-Archive" >&2
-  pwsh -NoProfile -Command "Compress-Archive -Path '$out/*' -DestinationPath '$zip' -Force" \
-    || powershell -NoProfile -Command "Compress-Archive -Path '$out/*' -DestinationPath '$zip' -Force"
-fi
+# 不依赖 zip / PowerShell：直接 python 打包（条目落在压缩包根，与 zip -r 一致）
+"$PY" - "$out" "$zip" <<'PACKEOF'
+import os, sys, zipfile
+out, zip_path = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _dirs, files in os.walk(out):
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            z.write(p, os.path.relpath(p, out))
+PACKEOF
 
 echo
 echo "打包完成：$zip"

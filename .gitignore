@@ -1,3 +1,5 @@
 /target
 /dist
 *.log
+*.report.txt
+src/i18n.json.unused.txt
