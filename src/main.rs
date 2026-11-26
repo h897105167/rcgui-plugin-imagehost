@@ -97,9 +97,7 @@ fn vstr(v: &Value) -> String {
 
 /// 宿主把失败的能力调用写成 `{"_error": "…"}`（见 PLUGIN.md §5.5）。
 fn cap_err(v: &Value) -> Option<String> {
-    v.get("_error")
-        .map(vstr)
-        .filter(|e| !e.trim().is_empty())
+    v.get("_error").map(vstr).filter(|e| !e.trim().is_empty())
 }
 
 /// 有的能力会把真正的结果再包一层 `{"result": …}`。
@@ -249,6 +247,15 @@ fn apply_form(cfg: &mut Cfg, form: &Map<String, Value>) {
     if let Some(v) = form.get("compress") {
         cfg.compress = truthy(v);
     }
+    // 主程序已不再提供 HTTP 设置页，端口可以由用户在这里手填；
+    // 填了就顺手把上传地址重算一遍，免得地址和端口对不上。
+    if let Some(v) = get("http_port") {
+        let port = v.trim().parse::<u16>().unwrap_or(0);
+        if port > 0 && port != cfg.http_port {
+            cfg.http_port = port;
+            cfg.http_url = format!("{}/plugin/{PLUGIN_ID}/{UPLOAD_ROUTE}", origin_of(port));
+        }
+    }
 }
 
 fn truthy(v: &Value) -> bool {
@@ -373,11 +380,7 @@ fn handle_request(id: Value, params: &Value) -> Value {
     }
 
     let provided = params.get("provided").cloned().unwrap_or(Value::Null);
-    let first = provided.is_null()
-        || provided
-            .as_object()
-            .map(|o| o.is_empty())
-            .unwrap_or(true);
+    let first = provided.is_null() || provided.as_object().map(|o| o.is_empty()).unwrap_or(true);
     let prev = params.get("state").cloned().unwrap_or(Value::Null);
     let form: Map<String, Value> = params
         .get("form")
@@ -410,7 +413,9 @@ fn handle_request(id: Value, params: &Value) -> Value {
     apply_form(&mut cfg, &form);
 
     match action.as_str() {
-        "state" | "refresh-remotes" => act_remotes(id, &action, step, &form, cfg, &provided, &work, migrated),
+        "state" | "refresh-remotes" => {
+            act_remotes(id, &action, step, &form, cfg, &provided, &work, migrated)
+        }
         "browse" => act_browse(id, &action, step, &form, cfg, &provided, &work),
         "pick" => act_pick(id, &action, step, &form, cfg, &provided, &work),
         "save" => {
@@ -561,9 +566,18 @@ fn act_browse(
         }
     }
     let status = if dirs.is_empty() {
-        i18n::f("「{}」下没有子目录", &[&if cur.is_empty() { "/" } else { cur.as_str() }])
+        i18n::f(
+            "「{}」下没有子目录",
+            &[&if cur.is_empty() { "/" } else { cur.as_str() }],
+        )
     } else {
-        i18n::f("「{}」下有 {} 个子目录", &[&if cur.is_empty() { "/" } else { cur.as_str() }, &dirs.len()])
+        i18n::f(
+            "「{}」下有 {} 个子目录",
+            &[
+                &if cur.is_empty() { "/" } else { cur.as_str() },
+                &dirs.len(),
+            ],
+        )
     };
     let choices = json!({ "path": list });
     panel(&id, Vec::new(), &cfg, &status, "ok", Some(choices))
@@ -592,7 +606,14 @@ fn act_pick(
     let picked = provided.get("pick").cloned().unwrap_or(Value::Null);
     let path = s(picked.get("path"));
     if path.is_empty() {
-        return panel(&id, Vec::new(), &cfg, &i18n::t("没有选择文件"), "warn", None);
+        return panel(
+            &id,
+            Vec::new(),
+            &cfg,
+            &i18n::t("没有选择文件"),
+            "warn",
+            None,
+        );
     }
     cfg.upload_path = path;
     let ops = vec![save_op(&cfg)];
@@ -607,11 +628,19 @@ fn act_copy(id: Value, cfg: Cfg, short: bool) -> Value {
         cfg.last_link.trim().to_string()
     };
     if text.is_empty() {
-        let msg = if short { i18n::t("还没有短链") } else { i18n::t("还没有直链") };
+        let msg = if short {
+            i18n::t("还没有短链")
+        } else {
+            i18n::t("还没有直链")
+        };
         return panel(&id, Vec::new(), &cfg, &msg, "warn", None);
     }
     let ops = vec![json!({ "op": "ui.copy", "text": text })];
-    let msg = if short { i18n::t("已复制短链") } else { i18n::t("已复制直链") };
+    let msg = if short {
+        i18n::t("已复制短链")
+    } else {
+        i18n::t("已复制直链")
+    };
     panel(&id, ops, &cfg, &msg, "ok", None)
 }
 
@@ -855,7 +884,12 @@ fn after_link(
     }
 }
 
-fn finish_upload(id: &Value, mut cfg: Cfg, work: &Map<String, Value>, source: Option<String>) -> Value {
+fn finish_upload(
+    id: &Value,
+    mut cfg: Cfg,
+    work: &Map<String, Value>,
+    source: Option<String>,
+) -> Value {
     let link = s(work.get("link"));
     let short = s(work.get("short"));
     let stored = s(work.get("stored"));
@@ -931,7 +965,10 @@ fn finish_short(
         let brief = first_line(&body);
         work.insert(
             "short_err".to_string(),
-            json!(i18n::f("短链服务返回 HTTP {code}：{brief}", &[&code, &brief])),
+            json!(i18n::f(
+                "短链服务返回 HTTP {code}：{brief}",
+                &[&code, &brief]
+            )),
         );
         return finish_upload(id, cfg, &work, source);
     }
@@ -1043,7 +1080,8 @@ fn parse_short(fmt: u32, body: &str) -> Result<String, String> {
 }
 
 fn parse_json_short(text: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(text).map_err(|e| i18n::f("短链服务回的不是 JSON：{e}", &[&e]))?;
+    let v: Value =
+        serde_json::from_str(text).map_err(|e| i18n::f("短链服务回的不是 JSON：{e}", &[&e]))?;
     let v = unwrap_result(&v);
     if let Some(s) = v.as_str() {
         return Ok(s.to_string());
@@ -1192,10 +1230,16 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
             }
             let (name, bytes) = match parse_upload(http) {
                 Ok(v) => v,
-                Err((code, msg)) => return http_json(&id, code, json!({ "ok": false, "error": msg })),
+                Err((code, msg)) => {
+                    return http_json(&id, code, json!({ "ok": false, "error": msg }))
+                }
             };
             if bytes.is_empty() {
-                return http_json(&id, 400, json!({ "ok": false, "error": i18n::t("收到的图片是空的") }));
+                return http_json(
+                    &id,
+                    400,
+                    json!({ "ok": false, "error": i18n::t("收到的图片是空的") }),
+                );
             }
             if bytes.len() > limit_of(&cfg) && !cfg.compress {
                 return http_json(
@@ -1233,7 +1277,9 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
         2 => {
             let (name, bytes) = match parse_upload(http) {
                 Ok(v) => v,
-                Err((code, msg)) => return http_json(&id, code, json!({ "ok": false, "error": msg })),
+                Err((code, msg)) => {
+                    return http_json(&id, code, json!({ "ok": false, "error": msg }))
+                }
             };
             let dir = norm_dir(&cfg.path);
             let port = host_port_of(&provided);
@@ -1310,7 +1356,11 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
         3 => {
             let up = provided.get("up").cloned().unwrap_or(Value::Null);
             if let Some(e) = cap_err(&up) {
-                return http_json(&id, 502, json!({ "ok": false, "error": i18n::f("上传失败：{e}", &[&e]) }));
+                return http_json(
+                    &id,
+                    502,
+                    json!({ "ok": false, "error": i18n::f("上传失败：{e}", &[&e]) }),
+                );
             }
             let dir = norm_dir(&cfg.path);
             let name = s(work.get("name"));
@@ -1353,7 +1403,10 @@ fn serve_upload(id: Value, params: &Value, http: &Value) -> Value {
                 if code != 0 && !(200..300).contains(&code) {
                     work.insert(
                         "short_err".to_string(),
-                        json!(i18n::f("短链服务返回 HTTP {code}：{}", &[&code, &first_line(&body)])),
+                        json!(i18n::f(
+                            "短链服务返回 HTTP {code}：{}",
+                            &[&code, &first_line(&body)]
+                        )),
                     );
                 } else {
                     match parse_short(cfg.short_fmt, &body) {
@@ -1433,7 +1486,11 @@ fn http_done(id: &Value, mut cfg: Cfg, work: Map<String, Value>) -> Value {
     body.insert("url".to_string(), json!(link));
     body.insert(
         "short_url".to_string(),
-        if short.is_empty() { Value::Null } else { json!(short) },
+        if short.is_empty() {
+            Value::Null
+        } else {
+            json!(short)
+        },
     );
     body.insert("name".to_string(), json!(name));
     body.insert("stored".to_string(), json!(stored));
@@ -1501,7 +1558,10 @@ fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
         }
         return Err((
             400,
-            i18n::t("multipart 里没有文件：字段名用 file / image 都认，也可以把图片字节直接当 body").to_string(),
+            i18n::t(
+                "multipart 里没有文件：字段名用 file / image 都认，也可以把图片字节直接当 body",
+            )
+            .to_string(),
         ));
     }
 
@@ -1509,7 +1569,8 @@ fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
     if raw.is_empty() {
         return Err((
             400,
-            i18n::t("请求体是空的：把图片放在 multipart 的 file 字段，或直接发图片字节").to_string(),
+            i18n::t("请求体是空的：把图片放在 multipart 的 file 字段，或直接发图片字节")
+                .to_string(),
         ));
     }
     let bytes = decode_b64(&raw)?;
@@ -1531,7 +1592,10 @@ fn parse_upload(http: &Value) -> Result<(String, Vec<u8>), (u16, String)> {
                 return Ok((upload_name(&given, &ctype), bytes));
             }
             if ctype.contains("json") {
-                return Err((400, i18n::t("JSON 里没有 data_b64 / data / base64 字段").to_string()));
+                return Err((
+                    400,
+                    i18n::t("JSON 里没有 data_b64 / data / base64 字段").to_string(),
+                ));
             }
         } else if ctype.contains("json") {
             return Err((400, i18n::t("JSON 解析失败").to_string()));
@@ -1802,7 +1866,11 @@ fn act_detect_port(
         1 => {
             let data_dir = data_dir_of(provided);
             if data_dir.is_empty() {
-                return err_panel(&id, &cfg, &i18n::t("取不到 RCGUI 的数据目录：重启一下 RCGUI 再点「探测端口」"));
+                return err_panel(
+                    &id,
+                    &cfg,
+                    &i18n::t("取不到 RCGUI 的数据目录：重启一下 RCGUI 再点「探测端口」"),
+                );
             }
             next(
                 &id,
@@ -1815,29 +1883,48 @@ fn act_detect_port(
             )
         }
         _ => {
-            let port = host_port_of(provided);
+            let host_port = host_port_of(provided);
+            // 宿主配置里读不到端口时，用户手填的那个就是准的。
+            let port = if host_port > 0 {
+                host_port
+            } else {
+                cfg.http_port
+            };
             if port == 0 {
-                cfg.http_port = 0;
                 cfg.http_url = String::new();
                 return panel(
                     &id,
                     vec![save_op(&cfg)],
                     &cfg,
-                    &i18n::t("没读到宿主端口：先确认 RCGUI 设置里的「HTTP 服务」是开着的"),
+                    &i18n::t("没读到宿主端口：在上面的「本机端口」里填一下 RCGUI 实际在用的端口"),
                     "warn",
                     None,
                 );
             }
             cfg.http_port = port;
-            cfg.http_url = format!(
-                "{}/plugin/{PLUGIN_ID}/{UPLOAD_ROUTE}",
-                origin_of(port)
+            cfg.http_url = format!("{}/plugin/{PLUGIN_ID}/{UPLOAD_ROUTE}", origin_of(port));
+            let mut status = i18n::f(
+                "上传地址：{}（上限 {} MB，{}）",
+                &[
+                    &cfg.http_url,
+                    &cfg.max_mb,
+                    &if cfg.compress {
+                        i18n::t("超限自动压缩")
+                    } else {
+                        i18n::t("超限直接报错")
+                    },
+                ],
             );
-            let status = i18n::f("上传地址：{}（上限 {} MB，{}）", &[&cfg.http_url, &cfg.max_mb, &if cfg.compress {
-                    i18n::t("超限自动压缩")
-                } else {
-                    i18n::t("超限直接报错")
-                }]);
+            if host_port == 0 {
+                status = format!(
+                    "{}（{}）",
+                    status,
+                    i18n::f(
+                        "宿主配置里没读到端口，用的是你填的 {0}",
+                        &[&port.to_string()]
+                    )
+                );
+            }
             panel(&id, vec![save_op(&cfg)], &cfg, &status, "ok", None)
         }
     }
