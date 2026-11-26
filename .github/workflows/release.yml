@@ -1,7 +1,7 @@
 name: release
 
-# 打 tag（vX.Y.Z）→ 构建 wasm → 打包目录包 → 建 Release 并挂上 zip
-# 本体的 scripts/fetch_plugins.ps1 就是从这个 Release 拉包的。
+# 打 tag（vX.Y.Z）→ 校验四处版本一致 → 格式 / wasm 编译 / 测试 → 打包 → 建 Release 并挂 zip
+# 手动 workflow_dispatch 只产出 artifact，不建 Release。
 on:
   push:
     tags: ["v*"]
@@ -10,27 +10,67 @@ on:
 permissions:
   contents: write
 
+# 同一时间只允许一个发布流程；不取消正在跑的那个 —— 中途断掉可能留下半个 Release。
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          components: rustfmt
           targets: wasm32-wasip1
 
-      - name: 校验 tag 与 config.json 版本
-        if: startsWith(github.ref, 'refs/tags/')
+      - uses: Swatinem/rust-cache@v2
+
+      # 版本号有四份副本（tag、config.json、Cargo.toml、Cargo.lock），
+      # 任何一份对不上，装上去的包名、界面显示的版本、Release 标题就会互相矛盾。
+      - name: 校验版本一致
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          ver=$(python3 -c 'import json;print(json.load(open("config.json"))["version"])')
-          echo "tag=$tag version=$ver"
-          if [ "$tag" != "$ver" ]; then
-            echo "tag 与 config.json 的 version 不一致：请先改 config.json 再打 tag" >&2
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json, os, sys, tomllib
+
+          cfg = json.load(open("config.json", encoding="utf-8"))
+          pid, ver = cfg["id"], cfg["version"]
+          errors = []
+
+          cargo_ver = tomllib.load(open("Cargo.toml", "rb"))["package"]["version"]
+          if cargo_ver != ver:
+              errors.append(f"Cargo.toml 的 version 是 {cargo_ver}，config.json 是 {ver}")
+
+          lock = tomllib.load(open("Cargo.lock", "rb"))
+          locked = {p["name"]: p["version"] for p in lock.get("package", [])}
+          if locked.get(pid) != ver:
+              errors.append(f"Cargo.lock 里 {pid} 是 {locked.get(pid)}，config.json 是 {ver}")
+
+          tag = os.environ.get("TAG", "").lstrip("v")
+          if tag and tag != ver:
+              errors.append(f"tag 是 v{tag}，config.json 是 {ver}：请先改版本再打 tag")
+
+          print(f"id={pid} version={ver} tag={os.environ.get('TAG') or '(手动触发，无 tag)'}")
+          for e in errors:
+              print("error: " + e, file=sys.stderr)
+          sys.exit(1 if errors else 0)
+          PY
+
+      # 发布包要能重复构建：格式、编译、测试都在打包之前拦住，别让坏的二进制出门。
+      - name: 格式
+        run: cargo fmt --all --check
+
+      - name: 编译 wasm 目标
+        run: cargo check --locked --target wasm32-wasip1
+
+      - name: 测试
+        run: cargo test --locked
 
       - name: 构建并打包
         run: bash scripts/pack.sh
@@ -41,6 +81,29 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+      # zip 的 sha256 打出来并写进 Release 正文，两者都能被用户独立核对。
+      - name: 记录包校验值
+        run: |
+          set -euo pipefail
+          id=$(python3 -c 'import json;print(json.load(open("config.json"))["id"])')
+          ver=$(python3 -c 'import json;print(json.load(open("config.json"))["version"])')
+          zip="dist/$id-$ver.zip"
+          sha=$(sha256sum "$zip" | cut -d' ' -f1)
+          echo "sha256=$sha" >> "$GITHUB_ENV"
+          {
+            echo ""
+            echo "### 安装"
+            echo ""
+            echo "- zip: \`$id-$ver.zip\`"
+            echo "- sha256: \`$sha\`"
+            echo "- 包内 \`check.sha256\` 另含 config.json 与 main.wasm 各自的 sha256。"
+            echo "- 需要宿主 0.3.0 或更高（面板分页从 0.3.0 起）；更老的宿主会忽略 \`pages\`/\`page\`，"
+            echo "  把所有控件排成一页，功能不丢。"
+            echo "- 上传与短链要走宿主的 HTTP 服务（默认端口 5273），宿主没开 HTTP 时这些按钮会提示先开。"
+            echo "- 权限：kv、ui、fs、http、rclone、env。会用 fs 读写本地文件与插件目录、用 http 发请求、"
+            echo "  用 rclone 上传、用 env 读数据目录。"
+          } > notes.md
+
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -49,6 +112,14 @@ jobs:
           set -euo pipefail
           id=$(python3 -c 'import json;print(json.load(open("config.json"))["id"])')
           ver=$(python3 -c 'import json;print(json.load(open("config.json"))["version"])')
-          gh release create "v$ver" "dist/$id-$ver.zip" \
-            --title "v$ver" --generate-notes \
-            || gh release upload "v$ver" "dist/$id-$ver.zip" --clobber
+          tag="v$ver"
+          # 已经发过就停：宿主按 Release 里那个固定 sha256 校验下载到的包，
+          # 覆写同名资产会让先后下载的人拿到不同字节，也没法复现旧的构建。
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag 已存在。同名资产不允许覆盖：要重新发布请先提高版本号（并删掉旧 Release）。" >&2
+            exit 1
+          fi
+          # gh 不允许 --generate-notes 和 --notes-file 同时出现，这里只用后者：
+          # Release 正文里要有 sha256 与安装说明，比自动生成的提交列表更有用。
+          gh release create "$tag" "dist/$id-$ver.zip" \
+            --title "$tag" --notes-file notes.md

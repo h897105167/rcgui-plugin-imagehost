@@ -9,6 +9,8 @@ English | [简体中文](README.zh-CN.md)
 
 This repository holds the plugin and nothing else: the Rust source, `config.json`, the packaging scripts and the release workflow. Every control you see in RCGUI is declared by `plugin_setting` in `config.json`, and the host draws the panel — there is no HTML, no front-end bundle, no JavaScript. Each label, placeholder and hint is declared twice in that file, `{"zh":…,"en":…}`, and the host renders whichever pair matches its interface language.
 
+The panel is split into pages. `plugin_setting.pages` lists them in tab order, and every control names the page it belongs to, so moving a control to another page is a one-field change and the order inside a page is the order in that file. Controls sharing a `line` are drawn side by side on one row.
+
 `config.json` also sets `"http_entry": true`, which makes the host hand `/plugin/imagehost/...` to this plugin. That is the door external clients use: the plugin answers a `ping` probe and accepts uploads over plain HTTP, so anything that can send a `POST` gets a link back without knowing rclone at all.
 
 ## Features
@@ -22,6 +24,7 @@ This repository holds the plugin and nothing else: the Rust source, `config.json
 | Size cap | `max_mb` (20 MB by default); past the cap the image is re-encoded to JPEG, or the upload is refused with 413 |
 | HTTP upload service | `ping` for probing, `upload` for uploading — this is what the Obsidian plugin talks to |
 | Copy buttons | Copy direct link / Copy short link put the last result on the clipboard |
+| Paged panel | five pages instead of one long form: Upload, Storage & Link, Compression & Naming, HTTP Access, Advanced |
 
 ## Install
 
@@ -31,45 +34,94 @@ This repository holds the plugin and nothing else: the Rust source, `config.json
 
 ## Panel
 
-The panel is one form, declared top to bottom in `config.json`. Labels are declared in Chinese and English and follow the host's interface language; the table lists the English ones, as they appear with an English UI.
+Five pages, in this order. Labels are declared in Chinese and English and follow the host's interface language; the tables list the English ones, as they appear with an English UI.
+
+| Page | `id` | What it holds |
+| --- | --- | --- |
+| Upload | `upload` | pick a remote, pick an image, get the link, save |
+| Storage & Link | `storage` | where files go, short-link template, last results with their copy buttons |
+| Compression & Naming | `compress` | size cap, compression, deduplication |
+| HTTP Access | `http` | the upload service used by external clients, and its address |
+| Advanced | `advanced` | parameters of the short-link template |
+
+`state` is the one control without a `page`: it is not part of any page, and the host draws the lamp and the status text of the last action with the panel itself.
+
+### Upload
 
 | Key | Control | Label | What it does |
 | --- | --- | --- | --- |
-| `g-title` | group | Image host (upload → direct link → short link) | section heading for the whole form |
+| `g-title` | group | Pick remote and file | heading of this page |
 | `remote` | select | Storage remote | the rclone remote to store into; the list is read from rclone |
-| `refresh-remotes` | action | Refresh remotes | re-read the remote list from rclone |
-| `path` | path | Upload dir | directory inside the remote; empty means the remote root |
-| `upload_path` | text | Image path | absolute path of the local image — typed here or filled by Choose file… |
-| `pick` | action | Choose file… | host file dialog, filtered to `png jpg jpeg gif webp bmp` |
+| `refresh-remotes` | action | Refresh list | re-read the remote list from rclone |
+| `upload_path` | text | Image path | absolute path of the local image — typed here or filled by Choose image… |
+| `pick` | action | Choose image… | host file dialog, filtered to `png jpg jpeg gif webp bmp` |
+| `run` | action | Get direct link | primary action: upload the image and produce the link |
+| `save` | action | Save settings | write the whole form into the plugin's `kv` store |
+
+### Storage & Link
+
+| Key | Control | Label | What it does |
+| --- | --- | --- | --- |
+| `path` | path | Storage folder | directory inside the remote; empty means the remote root |
+| `short_tpl` | select | Short-link template | None or Template 1; Template 1 is the only built-in shape |
+| `last_link` | text | Direct link | the last direct link; also written by Get direct link |
+| `copy-link` | action | Copy direct link | same row as Direct link; copies it |
+| `last_short` | text | Short link | the last short link, empty when the template failed |
+| `copy-short` | action | Copy short link | same row as Short link; copies it |
+| `link-tip` | hint | — | where the direct link comes from: site remote, or the host's proxy |
+
+### Compression & Naming
+
+| Key | Control | Label | What it does |
+| --- | --- | --- | --- |
+| `max_mb` | number | Size limit (MB) | maximum accepted size, 20 by default |
+| `compress` | bool | Compress if oversized | on by default: past the cap the image is re-encoded to JPEG before upload |
 | `dedupe` | bool | Deduplicate | on by default: a same-named object reuses the existing link instead of uploading again |
 | `dedupe-tip` | hint | — | explains Deduplicate and the `name (1).png` rename used when it is off |
-| `short_tpl` | select | Short-link template | None or Template 1; Template 1 is the only built-in shape |
+
+### HTTP Access
+
+| Key | Control | Label | What it does |
+| --- | --- | --- | --- |
+| `g-http` | group | Upload service | heading of the endpoint external clients talk to |
+| `http_port` | number | Local port | the port RCGUI listens on; the app no longer has an HTTP settings page, so this field is the only place to set it when the read below fails |
+| `http_url` | text | Upload URL | filled by Detect port from the port above; a display convenience, not a setting |
+| `detect-port` | action | Detect port | reads the port out of the host config; when that fails it keeps the port in Local port and recomputes Upload URL from it |
+| `http-tip` | hint | — | where the port comes from (host config first, then Local port, `5273` by default) and what `ping` and `upload` accept |
+
+### Advanced
+
+| Key | Control | Label | What it does |
+| --- | --- | --- | --- |
 | `g-tpl1` | group | Template 1 settings | parameters of the short-link template |
 | `short_fmt` | select | Response format | None (plain text), `JSON` or `JSONP` |
 | `short_method` | select | Method | `GET` or `POST` |
-| `short_rate` | number | Per-second limit | requests per second cap, 4 by default |
+| `short_rate` | number | Calls per second | requests per second cap, 4 by default |
 | `short_callback` | text | JSONP callback | callback name used for `JSONP`, `callback` by default |
 | `short_url` | text | Endpoint | endpoint of the short-link service |
 | `short_key` | password | api_key | sent with every request; required by Template 1 |
 | `short-tip` | hint | — | recaps the parameters, then points at Save settings |
-| `g-http` | group | HTTP upload service (for external clients) | the upload endpoint used by external clients |
-| `max_mb` | number | Size limit MB | maximum accepted size, 20 MB by default |
-| `compress` | bool | Compress oversized first | on by default: past the cap the image is re-encoded to JPEG before upload |
-| `detect-port` | action | Detect service | probes `127.0.0.1` for the host's HTTP port and fills Upload URL |
-| `http_url` | text | Upload URL | filled by Detect service; a display convenience, not a setting |
-| `http-tip` | hint | — | explains the port, `ping`, `upload`, compression and the short-link fallback |
-| `run` | action | Generate direct link | primary action: upload the image and produce the link |
-| `save` | action | Save settings | write the whole form into the plugin's `kv` store |
-| `copy-link` | action | Copy direct link | copy Direct link to the clipboard |
-| `last_link` | text | Direct link | the last direct link; also written by Generate direct link |
-| `copy-short` | action | Copy short link | copy Short link to the clipboard |
-| `last_short` | text | Short link | the last short link, empty when the template failed |
-| `state` | status | — | lamp plus the status text of the last action |
-| `link-tip` | hint | — | where the direct link comes from: site remote, or the host's proxy |
+
+## Permissions
+
+`capabilities` in `config.json` declares what this plugin may ask the host for. A round either answers with a payload or asks for one capability call, so a refused capability fails that one action and nothing else.
+
+Host version: 0.3.0 or newer. Paged panels arrived in host 0.3.0 — on an older host the `page` fields are ignored and all controls sit on one page, with no feature lost. Version 0.7.1 has not been released yet; the newest published tag is 0.6.1.
+
+| Capability | What it is used for | Where the data goes |
+| --- | --- | --- |
+| `kv` | read the saved form and the last link, write them back | the host's local store under `%APPDATA%\RCGUI` |
+| `fs` | the file dialog, reading the picked image, reading the host's own `config.json` to find its HTTP port | local disk only |
+| `ui` | clipboard copy, toasts | nowhere |
+| `env` | home and data directory paths, to build the host config path | nowhere |
+| `rclone` | list remotes, upload the image, read an object back for the proxied link | the remote you selected |
+| `http` | the Template 1 short-link request | the endpoint you typed into Endpoint |
+
+Those two are the only outbound paths: nothing is sent to a server unless you selected that rclone remote or configured that short-link endpoint. There is no telemetry and no update check.
 
 ## HTTP API
 
-The host's HTTP server listens on `127.0.0.1:<port>` (Settings → port, `5273` by default) and routes everything under `/plugin/imagehost` here.
+The host's HTTP server listens on `127.0.0.1:<port>` — `5273` by default — and routes everything under `/plugin/imagehost` here. The port is read from the host config when Detect port runs; if the host build has no such setting, type the port into Local port on the HTTP Access page and Detect port recomputes Upload URL from it.
 
 | Route | Purpose |
 | --- | --- |
@@ -81,7 +133,7 @@ The host's HTTP server listens on `127.0.0.1:<port>` (Settings → port, `5273` 
 
 ```json
 {
-  "ok": true, "plugin": "imagehost", "version": "0.6.1", "port": 5273,
+  "ok": true, "plugin": "imagehost", "version": "0.7.1", "port": 5273,
   "upload_url": "http://127.0.0.1:5273/plugin/imagehost/upload",
   "upload_path": "/plugin/imagehost/upload",
   "accept": "POST multipart/form-data (field name file / image) or send the raw image bytes as the body",
@@ -139,8 +191,8 @@ scripts/pack.sh                 the same for bash and CI
 ## Releasing
 
 1. Bump `version` in `config.json` and `Cargo.toml`; the workflow refuses a tag that disagrees with `config.json`.
-2. Tag and push: `git tag v0.7.0` then `git push origin v0.7.0`.
-3. CI builds and attaches `imagehost-0.7.0.zip` to the release, and prints its SHA-256.
+2. Tag and push: `git tag v0.7.1` then `git push origin v0.7.1`.
+3. CI builds and attaches `imagehost-0.7.1.zip` to the release, and prints its SHA-256.
 4. Copy that tag, asset name and SHA-256 into `plugins/manifest.json` in the host repository, so the next RCGUI build picks the new version up.
 
 Do not run `gh release create` by hand: the workflow creates the release and uploads the asset itself.
@@ -149,7 +201,7 @@ Do not run `gh release create` by hand: the workflow creates the release and upl
 
 - The host starts `main.wasm` as a WASI command and writes one JSON request per round to stdin.
 - A round answers either with a normal payload, or with `{"need":[{"cap":…,"params":…}]}` to ask the host for a capability call; the host replies and the round continues.
-- Declared capabilities: `kv`, `ui`, `fs`, `http`, `rclone`, `env`.
+- Declared capabilities: `kv`, `ui`, `fs`, `http`, `rclone`, `env` — see [Permissions](#permissions) for what each one is used for.
 - Panel state lives in the plugin's `kv` store — `on_start` runs `state`, `on_exit` runs `exit`.
 - Every user-visible string goes through a lookup keyed by its Chinese original, so an unknown action answers `Unknown action: <name>` (or `未知动作：<名字>` in a Chinese UI) instead of aborting the round.
 

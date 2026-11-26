@@ -6,6 +6,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+repo_dir=$PWD
+dist_dir="$repo_dir/dist"
 
 # Windows 上 python3 可能是应用商店占位符（能启动但退出码 49，什么都不做），
 # 所以先探测真正能执行的解释器再使用；Git Bash / CI 上 python3 正常。
@@ -40,6 +42,21 @@ cfg_version=$(json_str version)
 cfg_entry=$(json_str entry)
 [ -n "$cfg_entry" ] || cfg_entry=main.wasm
 
+# 这三项会被拼进路径，后面还要 rm -rf，所以先按白名单收紧：
+# 写成 ../../x 或带路径分隔符的一律拒绝，而不是交给拼接结果去赌。
+if ! [[ "$cfg_id" =~ ^[a-z0-9][a-z0-9-]{1,63}$ ]]; then
+  echo "config.json 的 id 不合法：'$cfg_id'。只允许小写字母、数字、连字符，2-64 字符，且以字母或数字开头。" >&2
+  exit 1
+fi
+if ! [[ "$cfg_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  echo "config.json 的 version 不是 semver：'$cfg_version'（例：0.4.1、1.0.0-rc.1）。" >&2
+  exit 1
+fi
+if ! [[ "$cfg_entry" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.wasm$ ]]; then
+  echo "config.json 的 entry 不合法：'$cfg_entry'。要是一个 .wasm 文件名，带目录或其它扩展名都不行。" >&2
+  exit 1
+fi
+
 wasm="target/wasm32-wasip1/release/$cfg_entry"
 if [ ! -f "$wasm" ]; then
   echo "找不到 $wasm" >&2
@@ -49,12 +66,27 @@ if [ ! -f "$wasm" ]; then
   exit 1
 fi
 
-out="dist/$cfg_id-$cfg_version"
-rm -rf "$out"
-mkdir -p "$out"
+out="$dist_dir/$cfg_id-$cfg_version"
+zip="$dist_dir/$cfg_id-$cfg_version.zip"
 
-cp config.json "$out/config.json"
-cp "$wasm" "$out/$cfg_entry"
+# 这两个路径马上会被删掉：只允许动 dist 的直接子项，符号链接一律不碰，
+# 免得一个指到别处的链接把删除带出 dist 之外。
+for target in "$out" "$zip"; do
+  if [ "$(dirname "$target")" != "$dist_dir" ]; then
+    echo "拒绝操作：$target 不在 $dist_dir 下。" >&2
+    exit 1
+  fi
+  if [ -L "$target" ]; then
+    echo "拒绝操作：$target 是符号链接。" >&2
+    exit 1
+  fi
+done
+
+rm -rf -- "$out"
+mkdir -p -- "$out"
+
+cp -- config.json "$out/config.json"
+cp -- "$wasm" "$out/$cfg_entry"
 
 # check.sha256：每行 "<sha256>  <相对路径>"，入口必须在表里
 (
@@ -65,8 +97,7 @@ cp "$wasm" "$out/$cfg_entry"
   done
 )
 
-zip="dist/$cfg_id-$cfg_version.zip"
-rm -f "$zip"
+rm -f -- "$zip"
 # 不依赖 zip / PowerShell：直接 python 打包（条目落在压缩包根，与 zip -r 一致）
 "$PY" - "$out" "$zip" <<'PACKEOF'
 import os, sys, zipfile

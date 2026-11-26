@@ -242,7 +242,10 @@ mod tests {
         with_lang("zh-Hans", || {
             assert_eq!(f("上传失败：{e}", &[&"boom"]), "上传失败：boom");
             assert_eq!(f("共 {} 个，第一个 {}", &[&2, &"a"]), "共 2 个，第一个 a");
-            assert_eq!(f("花括号 {{}} 保留", &[] as &[&dyn fmt::Display]), "花括号 {} 保留");
+            assert_eq!(
+                f("花括号 {{}} 保留", &[] as &[&dyn fmt::Display]),
+                "花括号 {} 保留"
+            );
             // 格式说明符不支持：原样留下，参数不前进
             assert_eq!(f("值 {:.1}", &[&1.5]), "值 {:.1}");
         });
