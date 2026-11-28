@@ -197,6 +197,12 @@ scripts/pack.sh                 the same for bash and CI
 
 Do not run `gh release create` by hand: the workflow creates the release and uploads the asset itself.
 
+## Building in CI
+
+`.github/workflows/ci.yml` runs on every push, every pull request and once a day at 19:44 UTC: formatting, `cargo check --target wasm32-wasip1`, the tests and the `config.json` checks. A dependency or runner-image change shows up there without anyone pushing.
+
+To get a package without a local Rust toolchain, run **release** by hand (`Actions` → `release` → `Run workflow`, pick the branch). The artifact `plugin-package` holds `dist/imagehost-<version>.zip`. A manual run never creates a Release — that only happens for a `v*` tag.
+
 ## Plugin protocol
 
 - The host starts `main.wasm` as a WASI command and writes one JSON request per round to stdin.
