@@ -7,6 +7,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # 每天也跑一次：依赖、runner 镜像、宿主协议任何一边悄悄变了，没人推代码也能发现。
+  # 定时跑出来的红不会自动开 issue——修不修、什么时候修，由人决定。
+  # cron 用 UTC：19:45 UTC 是北京时间 03:45。避开整点，GitHub 的整点排队最久。
+  schedule:
+    - cron: "45 19 * * *"
 
 permissions:
   contents: read
